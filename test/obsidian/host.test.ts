@@ -2,8 +2,13 @@
 
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type {
+  PresentationSnapshot,
+  SuggestionActions,
+} from "../../src/integration/types";
+import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
 import { ObsidianWritingHost } from "../../src/obsidian/host";
 
 describe("ObsidianWritingHost", () => {
@@ -226,6 +231,37 @@ describe("ObsidianWritingHost", () => {
     second.close();
   });
 
+  it("reports a presentation installed for the current document", () => {
+    const view = createView("draft");
+    const onPresentation = vi.fn();
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "presented",
+      onPresentation,
+    });
+    const snapshot = pendingPresentation("presented:0");
+
+    host.present(snapshot, inertActions());
+
+    expect(onPresentation).toHaveBeenCalledOnce();
+    expect(onPresentation).toHaveBeenCalledWith(snapshot);
+    host.close();
+  });
+
+  it("does not report a presentation for a retired document revision", () => {
+    const view = createView("draft");
+    const onPresentation = vi.fn();
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "retired",
+      onPresentation,
+    });
+    view.dispatch({ changes: { from: 5, insert: " updated" } });
+
+    host.present(pendingPresentation("retired:0"), inertActions());
+
+    expect(onPresentation).not.toHaveBeenCalled();
+    host.close();
+  });
+
   function createView(doc: string, extensions: readonly Extension[] = []): EditorView {
     const view = new EditorView({
       parent: document.body,
@@ -235,3 +271,24 @@ describe("ObsidianWritingHost", () => {
     return view;
   }
 });
+
+function pendingPresentation(revision: string): PresentationSnapshot {
+  return {
+    documentRevision: revision,
+    presentationRevision: 1,
+    appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    state: { type: "pending" },
+    suggestions: [],
+  };
+}
+
+function inertActions(): SuggestionActions {
+  return {
+    apply: async () => ({ status: "completed" }),
+    dismiss: async () => ({ status: "completed" }),
+    explain: async function* () {
+      return;
+    },
+    report: async () => ({ status: "completed" }),
+  };
+}

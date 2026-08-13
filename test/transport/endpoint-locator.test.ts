@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  EndpointProtocolVersionError,
   EndpointSecurityError,
   FileEndpointLocator,
   type EndpointFileSystem,
@@ -20,7 +21,7 @@ describe("Refine endpoint discovery", () => {
       socketPath: "/private/tmp/refine-123/integration.sock",
       launchToken: "per-launch-secret",
       serverEpoch: "epoch-123",
-      protocolMajor: 1,
+      protocolMajor: 2,
       pid: 1234,
     });
   });
@@ -42,7 +43,7 @@ describe("Refine endpoint discovery", () => {
         socketPath: "/private/tmp/refine-123/integration.sock",
         credential: "legacy-secret",
         serverEpoch: "epoch-123",
-        protocolMajor: 1,
+        protocolMajor: 2,
         pid: 1234,
       }),
     });
@@ -53,6 +54,25 @@ describe("Refine endpoint discovery", () => {
     });
 
     await expect(locator.locate()).rejects.toThrow("launchToken");
+  });
+
+  it("distinguishes an incompatible protocol from malformed endpoint metadata", async () => {
+    const locator = new FileEndpointLocator({
+      descriptorPath: "/Users/test/endpoint.json",
+      currentUid: 501,
+      fileSystem: endpointFileSystem({
+        descriptorText: JSON.stringify({
+          version: 1,
+          socketPath: "/private/tmp/refine-123/integration.sock",
+          launchToken: "per-launch-secret",
+          serverEpoch: "epoch-123",
+          protocolMajor: 1,
+          pid: 1234,
+        }),
+      }),
+    });
+
+    await expect(locator.locate()).rejects.toThrow(EndpointProtocolVersionError);
   });
 });
 
@@ -70,7 +90,7 @@ function endpointFileSystem(
       socketPath,
       launchToken: "per-launch-secret",
       serverEpoch: "epoch-123",
-      protocolMajor: 1,
+      protocolMajor: 2,
       pid: 1234,
     });
   return {

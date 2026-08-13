@@ -40,6 +40,34 @@ export interface DiffRun {
   readonly text: string;
 }
 
+export type SuggestionHighlightStyle = "underline" | "dashedUnderline" | "highlight";
+
+export interface PresentationAppearance {
+  readonly highlight: {
+    readonly style: SuggestionHighlightStyle;
+    readonly grammarColor: string;
+    readonly fluencyColor: string;
+  };
+  readonly diff: {
+    readonly additionColor: string;
+    readonly deletionColor: string;
+    readonly showHiddenWhitespace: boolean;
+  };
+}
+
+export const DEFAULT_PRESENTATION_APPEARANCE: PresentationAppearance = {
+  highlight: {
+    style: "underline",
+    grammarColor: "#FF2D55",
+    fluencyColor: "#007AFF",
+  },
+  diff: {
+    additionColor: "#34C759",
+    deletionColor: "#FF3B30",
+    showHiddenWhitespace: true,
+  },
+};
+
 export type SuggestionActionKind = "apply" | "dismiss" | "explain" | "report";
 
 export interface PresentedSuggestion {
@@ -54,6 +82,7 @@ export interface PresentedSuggestion {
 export interface PresentationSnapshot {
   readonly documentRevision: DocumentRevision;
   readonly presentationRevision: number;
+  readonly appearance: PresentationAppearance;
   readonly state:
     | { readonly type: "pending" }
     | { readonly type: "checking" }
@@ -63,6 +92,7 @@ export interface PresentationSnapshot {
         readonly reason:
           | "disconnected"
           | "engineUnavailable"
+          | "checkFailed"
           | "invalidDocument"
           | "unsupportedSource"
           | "resourceLimit";

@@ -25,6 +25,7 @@ import type {
   SuggestionActions,
   WritingHost,
 } from "./types";
+import { DEFAULT_PRESENTATION_APPEARANCE } from "./types";
 
 export interface WritingCheckEnginePort {
   connect(
@@ -87,6 +88,7 @@ class IntegrationRun {
       }
     | undefined;
   private currentPresentation: PresentationSnapshot | undefined;
+  private appearance = DEFAULT_PRESENTATION_APPEARANCE;
   private currentCheckId: string | undefined;
   private serverEpoch: string | undefined;
   private presentationRevision = 0;
@@ -324,6 +326,7 @@ class IntegrationRun {
     await this.publish({
       documentRevision: snapshot.revision,
       presentationRevision: this.nextPresentationRevision(),
+      appearance: this.appearance,
       state: { type: "pending" },
       suggestions: [],
     });
@@ -449,7 +452,9 @@ class IntegrationRun {
         if (event.fatal) {
           throw new FatalEngineError(`Refine engine fault: ${event.code}`);
         }
-        await this.publishUnavailable("engineUnavailable");
+        if (event.code === "engineUnavailable") {
+          await this.publishUnavailable("engineUnavailable");
+        }
         return;
     }
   }
@@ -476,9 +481,11 @@ class IntegrationRun {
       this.pendingCheck = undefined;
     }
     validatePresentationContent(content, this.latestSnapshot);
+    this.appearance = content.appearance;
     const snapshot: PresentationSnapshot = {
       documentRevision: content.documentRevision,
       presentationRevision: this.nextPresentationRevision(),
+      appearance: this.appearance,
       state: presentationState(content),
       suggestions: this.disablePendingActions(content.suggestions),
     };
@@ -745,6 +752,7 @@ class IntegrationRun {
         await this.publish({
           documentRevision: outcomeSnapshot.revision,
           presentationRevision: this.nextPresentationRevision(),
+          appearance: this.appearance,
           state: { type: "pending" },
           suggestions: [],
         });
@@ -755,6 +763,7 @@ class IntegrationRun {
           await this.publish({
             documentRevision: revision,
             presentationRevision: this.nextPresentationRevision(),
+            appearance: this.appearance,
             state: { type: "pending" },
             suggestions: [],
           });
@@ -910,6 +919,7 @@ class IntegrationRun {
     return this.publish({
       documentRevision: revision,
       presentationRevision: this.nextPresentationRevision(),
+      appearance: this.appearance,
       state: { type: "unavailable", reason },
       suggestions: [],
     });
@@ -929,6 +939,7 @@ class IntegrationRun {
       await this.publish({
         documentRevision: revision,
         presentationRevision: this.nextPresentationRevision(),
+        appearance: this.appearance,
         state: { type: "closed" },
         suggestions: [],
       });
@@ -978,6 +989,7 @@ class IntegrationRun {
     return this.publish({
       documentRevision: revision,
       presentationRevision: this.nextPresentationRevision(),
+      appearance: this.appearance,
       state: { type: "pending" },
       suggestions: [],
     });

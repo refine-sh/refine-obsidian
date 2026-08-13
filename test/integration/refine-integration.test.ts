@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createRefineIntegration } from "../../src/integration/refine-integration";
+import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
 import type {
   DocumentSnapshot,
   HostApplyOutcome,
@@ -11,6 +12,7 @@ import type {
   SuggestionActions,
   WritingHost,
 } from "../../src/integration/types";
+import type { PresentationAppearance } from "../../src/integration/types";
 import { AsyncQueue } from "../../src/shared/async-queue";
 import type {
   CommandReceipt,
@@ -43,6 +45,7 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:0",
         status: "complete",
         coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
         suggestions: [
           {
             id: "suggestion-1",
@@ -133,6 +136,7 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:0",
         status: "complete",
         coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
         suggestions: [
           {
             id: "old",
@@ -171,11 +175,85 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:0",
         status: "complete",
         coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
         suggestions: [],
       },
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(host.currentPresentation?.documentRevision).toBe("doc:1");
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("retains the latest engine appearance across locally synthesized presentations", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    expect(host.currentPresentation?.appearance).toEqual(DEFAULT_PRESENTATION_APPEARANCE);
+
+    engine.emit({
+      type: "presentationContentReplaced",
+      checkId: "check-appearance",
+      content: {
+        documentRevision: "doc:0",
+        status: "complete",
+        coverage: "full",
+        appearance: alternateAppearance,
+        suggestions: [],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.appearance).toEqual(alternateAppearance),
+    );
+
+    host.observations.push({
+      type: "snapshot",
+      snapshot: snapshot("doc:1", "create a link"),
+    });
+    await vi.waitFor(() =>
+      expect(host.currentPresentation).toMatchObject({
+        documentRevision: "doc:1",
+        state: { type: "pending" },
+        appearance: alternateAppearance,
+      }),
+    );
+
+    controller.abort();
+    host.observations.close();
+    await run;
+    expect(host.currentPresentation).toMatchObject({
+      state: { type: "closed" },
+      appearance: alternateAppearance,
+    });
+  });
+
+  it("re-presents a current check when only its appearance changes", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    const first = suggestionPresentation("check-appearance", "suggestion-1");
+    engine.emit(first);
+    await vi.waitFor(() => expect(host.currentPresentation?.suggestions).toHaveLength(1));
+    const firstRevision = host.currentPresentation?.presentationRevision ?? 0;
+
+    engine.emit({
+      ...first,
+      content: { ...first.content, appearance: alternateAppearance },
+    });
+
+    await vi.waitFor(() => {
+      expect(host.currentPresentation?.appearance).toEqual(alternateAppearance);
+      expect(host.currentPresentation?.presentationRevision).toBeGreaterThan(firstRevision);
+      expect(host.currentPresentation?.suggestions[0]?.id).toBe("suggestion-1");
+    });
 
     controller.abort();
     host.observations.close();
@@ -320,6 +398,100 @@ describe("RefineIntegration", () => {
     controller.abort();
     host.observations.close();
     engine.sessions[1]?.events.close();
+    await run;
+  });
+
+  it("publishes a failed check distinctly and accepts a manual retry", async () => {
+    const host = new FakeHost(snapshot("doc:0", "first"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+
+    host.observations.push({ type: "checkRequested", revision: "doc:0" });
+    await vi.waitFor(() =>
+      expect(
+        engine.commands.filter(({ command }) => command.type === "requestCheck"),
+      ).toHaveLength(1),
+    );
+    const firstRequest = engine.commands.find(
+      ({ command }) => command.type === "requestCheck",
+    );
+    if (!firstRequest) {
+      throw new Error("expected initial requestCheck command");
+    }
+    engine.eventQueue.push({
+      type: "event",
+      sequence: 1,
+      epoch: "epoch-1",
+      causeCommandId: firstRequest.id,
+      event: {
+        type: "presentationContentReplaced",
+        checkId: "check-failed",
+        content: {
+          documentRevision: "doc:0",
+          status: "unavailable",
+          unavailableReason: "checkFailed",
+          appearance: DEFAULT_PRESENTATION_APPEARANCE,
+          suggestions: [],
+        },
+      },
+    });
+    engine.eventQueue.push({
+      type: "event",
+      sequence: 2,
+      epoch: "epoch-1",
+      causeCommandId: firstRequest.id,
+      event: {
+        type: "fault",
+        code: "internalError",
+        fatal: false,
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(host.currentPresentation).toMatchObject({
+        state: { type: "unavailable", reason: "checkFailed" },
+        suggestions: [],
+      }),
+    );
+
+    host.observations.push({ type: "checkRequested", revision: "doc:0" });
+    await vi.waitFor(() =>
+      expect(
+        engine.commands.filter(({ command }) => command.type === "requestCheck"),
+      ).toHaveLength(2),
+    );
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("publishes a standalone engine-unavailable fault as unavailable", async () => {
+    const host = new FakeHost(snapshot("doc:0", "first"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+
+    engine.emit({
+      type: "fault",
+      code: "engineUnavailable",
+      fatal: false,
+    });
+
+    await vi.waitFor(() =>
+      expect(host.currentPresentation).toMatchObject({
+        state: { type: "unavailable", reason: "engineUnavailable" },
+        suggestions: [],
+      }),
+    );
+
+    controller.abort();
+    host.observations.close();
     await run;
   });
 
@@ -649,6 +821,7 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:0",
         status: "complete",
         coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
         suggestions: [],
       },
     });
@@ -679,6 +852,7 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:0",
         status: "complete",
         coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
         suggestions: [
           {
             id: "dismiss-me",
@@ -747,6 +921,7 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:0",
         status: "complete",
         coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
         suggestions: [],
       },
     });
@@ -811,7 +986,110 @@ describe("RefineIntegration", () => {
     await expect(apply).resolves.toEqual({ status: "stale" });
     await run;
   });
+
+  it("preserves an in-flight Apply when settings regroup its semantic edits", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link"));
+    host.apply.mockResolvedValueOnce({ status: "unsupported", reason: "readOnly" });
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    engine.emit(suggestionPresentation("check-1", "word-suggestion"));
+    await vi.waitFor(() => expect(host.currentPresentation?.suggestions).toHaveLength(1));
+
+    const originalApply = host.currentActions?.apply("word-suggestion");
+    if (!originalApply) {
+      throw new Error("expected Apply action");
+    }
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command.type).toBe("performAction"),
+    );
+    const perform = engine.commands.at(-1)?.command;
+    if (!perform || perform.type !== "performAction") {
+      throw new Error("expected performAction command");
+    }
+    const regrouped = suggestionPresentation("check-1", "sentence-suggestion");
+    engine.emit({
+      ...regrouped,
+      content: {
+        ...regrouped.content,
+        suggestions: regrouped.content.suggestions.map((suggestion) => ({
+          ...suggestion,
+          availableActions: [],
+        })),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.currentPresentation?.suggestions[0]).toMatchObject({
+        id: "sentence-suggestion",
+        availableActions: [],
+      });
+    });
+
+    await expect(
+      host.currentActions?.apply("sentence-suggestion"),
+    ).resolves.toEqual({ status: "stale" });
+    expect(
+      engine.commands.filter(({ command }) => command.type === "performAction"),
+    ).toHaveLength(1);
+
+    engine.emit({
+      type: "applyRequested",
+      actionId: perform.actionId,
+      transactionId: "settings-transaction",
+      request: {
+        expectedRevision: "doc:0",
+        sourceId: "document",
+        edits: [
+          {
+            range: { location: 7, length: 2 },
+            expectedText: "an",
+            replacement: "a",
+          },
+        ],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command).toMatchObject({
+        type: "completeApply",
+        transactionId: "settings-transaction",
+      }),
+    );
+    engine.emit({
+      type: "actionRejected",
+      actionId: perform.actionId,
+      reason: "readOnly",
+    });
+    await expect(originalApply).resolves.toEqual({
+      status: "unavailable",
+      reason: "readOnly",
+    });
+
+    engine.emit(suggestionPresentation("check-1", "sentence-suggestion"));
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions[0]?.availableActions).toEqual(["apply"]),
+    );
+    expect(host.apply).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
 });
+
+const alternateAppearance: PresentationAppearance = {
+  highlight: {
+    style: "dashedUnderline",
+    grammarColor: "#AABBCC",
+    fluencyColor: "#DDEEFF",
+  },
+  diff: {
+    additionColor: "#123456",
+    deletionColor: "#ABCDEF",
+    showHiddenWhitespace: false,
+  },
+};
 
 class FakeHost implements WritingHost {
   readonly observations = new AsyncQueue<HostObservation>();
@@ -993,6 +1271,7 @@ function suggestionPresentation(
       documentRevision: "doc:0",
       status: "complete",
       coverage: "full",
+      appearance: DEFAULT_PRESENTATION_APPEARANCE,
       suggestions: [
         {
           id: suggestionId,

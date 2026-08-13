@@ -25,9 +25,30 @@ interface ProtocolFixture {
   readonly completeApply: ClientCommandEnvelope;
 }
 
-describe("integration protocol V1 golden transcript", () => {
+describe("integration protocol V2 golden transcript", () => {
   it("is consumed without translation by the TypeScript transport", async () => {
     const fixture = await loadFixture();
+    expect(fixture.presentation).toMatchObject({
+      event: {
+        type: "presentationContentReplaced",
+        content: {
+          suggestions: [
+            {},
+            {
+              id: "suggestion-space",
+              highlightRanges: [
+                { location: 21, length: 1 },
+              ],
+              diff: [
+                { kind: "unchanged", text: "link" },
+                { kind: "insert", text: " " },
+                { kind: "unchanged", text: "or" },
+              ],
+            },
+          ],
+        },
+      },
+    });
     const frames = new AsyncQueue<unknown>();
     const sent: unknown[] = [];
     const connector: FrameConnector = {
@@ -48,7 +69,7 @@ describe("integration protocol V1 golden transcript", () => {
         socketPath: "/private/tmp/refine-fixture/s",
         launchToken: fixture.hello.launchToken,
         serverEpoch: fixture.welcome.serverEpoch,
-        protocolMajor: 1,
+        protocolMajor: 2,
         pid: 123,
       }),
     };
@@ -86,7 +107,7 @@ describe("integration protocol V1 golden transcript", () => {
 
 async function loadFixture(): Promise<ProtocolFixture> {
   const data = await readFile(
-    new URL("../fixtures/integration-protocol-v1.json", import.meta.url),
+    new URL("../fixtures/integration-protocol-v2.json", import.meta.url),
     "utf8",
   );
   return JSON.parse(data) as ProtocolFixture;

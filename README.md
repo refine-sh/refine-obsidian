@@ -36,11 +36,17 @@ code:
 External editor integrations should reuse the protocol and integration state
 machine. They only replace the host adapter and native presentation.
 
-## V1 behavior
+## V2 behavior
 
 - Automatic writing-check scheduling and policy live in the Refine app.
 - **Refine: Check current note** requests an immediate check.
+- Refine automatically checks a changed note after a short quiet period when
+  **Check Writing Automatically** is enabled in the Refine app.
+- The bottom status-bar icon shows connection, checking, and suggestion state;
+  activate it to open the Refine menu.
 - Grammar and fluency suggestions are shown as native editor decorations.
+- Highlight style, grammar/fluency colors, diff colors, and hidden-whitespace
+  markers follow Refine's appearance settings without requiring another check.
 - Apply and Dismiss are implemented. Explain and Report are already represented
   by the shared interface and become visible only when Refine advertises them.
 - If Refine restarts, the plugin reconnects and reopens the latest complete

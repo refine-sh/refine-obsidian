@@ -4,11 +4,13 @@ import { EngineConnectionError } from "../../src/transport/engine-connection-err
 import { AsyncQueue } from "../../src/shared/async-queue";
 import {
   EndpointDescriptorError,
+  EndpointProtocolVersionError,
   type EndpointLocator,
 } from "../../src/transport/endpoint-locator";
 import {
   RefineTransport,
   EndpointReplacedError,
+  IncompatibleProtocolError,
   TransportProtocolError,
   type FrameConnection,
   type FrameConnector,
@@ -21,7 +23,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, sent, () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 1, minor: 0 },
+        protocol: { major: 2, minor: 0 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -40,7 +42,7 @@ describe("Refine transport handshake", () => {
     });
     expect(sent[0]).toEqual({
       type: "hello",
-      protocol: { major: 1, minor: 0 },
+      protocol: { major: 2, minor: 0 },
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
       runId: "run-1",
       launchToken: "secret-1",
@@ -112,6 +114,18 @@ describe("Refine transport handshake", () => {
           documentRevision: "doc:0",
           status: "complete",
           coverage: "full",
+          appearance: {
+            highlight: {
+              style: "dashedUnderline",
+              grammarColor: "#FF2D55",
+              fluencyColor: "#007AFF",
+            },
+            diff: {
+              additionColor: "#34C759",
+              deletionColor: "#FF3B30",
+              showHiddenWhitespace: true,
+            },
+          },
           suggestions: [
             {
               id: "suggestion-1",
@@ -133,7 +147,13 @@ describe("Refine transport handshake", () => {
         sequence: 2,
         event: {
           type: "presentationContentReplaced",
-          content: { suggestions: [{ id: "suggestion-1" }] },
+          content: {
+            appearance: {
+              highlight: { style: "dashedUnderline" },
+              diff: { showHiddenWhitespace: true },
+            },
+            suggestions: [{ id: "suggestion-1" }],
+          },
         },
       },
     });
@@ -155,7 +175,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 1, minor: 0 },
+        protocol: { major: 2, minor: 0 },
         serverEpoch: "epoch-2",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -173,6 +193,169 @@ describe("Refine transport handshake", () => {
     await expect(connection).rejects.toMatchObject({ recoverability: "recoverable" });
   });
 
+  it("reports an incompatible welcome protocol explicitly", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const connector = connectionConnector(frames, [], () => {
+      frames.push({
+        type: "welcome",
+        protocol: { major: 1, minor: 0 },
+        serverEpoch: "epoch-1",
+        runResumed: false,
+        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        capabilities: [],
+      });
+    });
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    });
+
+    const connection = transport.connect(new AbortController().signal);
+    await expect(connection).rejects.toThrow(IncompatibleProtocolError);
+    await expect(connection).rejects.toMatchObject({ recoverability: "fatal" });
+  });
+
+  it("fails closed when presentation appearance contains an unknown field", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const connector = connectionConnector(frames, [], () => {
+      frames.push({
+        type: "welcome",
+        protocol: { major: 2, minor: 0 },
+        serverEpoch: "epoch-1",
+        runResumed: false,
+        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        capabilities: [],
+      });
+    });
+    const session = await new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    }).connect(new AbortController().signal);
+    const events = session.events(new AbortController().signal)[Symbol.asyncIterator]();
+    frames.push({
+      type: "event",
+      sequence: 1,
+      epoch: "epoch-1",
+      event: {
+        type: "presentationContentReplaced",
+        checkId: "check-1",
+        content: {
+          documentRevision: "doc:0",
+          status: "complete",
+          coverage: "full",
+          appearance: {
+            highlight: {
+              style: "underline",
+              grammarColor: "#FF2D55",
+              fluencyColor: "#007AFF",
+              unexpected: true,
+            },
+            diff: {
+              additionColor: "#34C759",
+              deletionColor: "#FF3B30",
+              showHiddenWhitespace: true,
+            },
+          },
+          suggestions: [],
+        },
+      },
+    });
+
+    await expect(events.next()).rejects.toThrow(TransportProtocolError);
+    await session.close();
+  });
+
+  it("decodes checkFailed as a protocol-v2 unavailable reason", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const connector = connectionConnector(frames, [], () => {
+      frames.push({
+        type: "welcome",
+        protocol: { major: 2, minor: 0 },
+        serverEpoch: "epoch-1",
+        runResumed: false,
+        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        capabilities: [],
+      });
+    });
+    const session = await new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    }).connect(new AbortController().signal);
+    const events = session.events(new AbortController().signal)[Symbol.asyncIterator]();
+    frames.push({
+      type: "event",
+      sequence: 1,
+      epoch: "epoch-1",
+      event: {
+        type: "presentationContentReplaced",
+        checkId: "check-1",
+        content: {
+          documentRevision: "doc:0",
+          status: "unavailable",
+          unavailableReason: "checkFailed",
+          appearance: {
+            highlight: {
+              style: "underline",
+              grammarColor: "#FF2D55",
+              fluencyColor: "#007AFF",
+            },
+            diff: {
+              additionColor: "#34C759",
+              deletionColor: "#FF3B30",
+              showHiddenWhitespace: true,
+            },
+          },
+          suggestions: [],
+        },
+      },
+    });
+
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "presentationContentReplaced",
+          content: {
+            status: "unavailable",
+            unavailableReason: "checkFailed",
+          },
+        },
+      },
+    });
+
+    frames.push({
+      type: "event",
+      sequence: 2,
+      epoch: "epoch-1",
+      event: {
+        type: "presentationContentReplaced",
+        checkId: "check-2",
+        content: {
+          documentRevision: "doc:0",
+          status: "unavailable",
+          unavailableReason: "futureReason",
+          appearance: {
+            highlight: {
+              style: "underline",
+              grammarColor: "#FF2D55",
+              fluencyColor: "#007AFF",
+            },
+            diff: {
+              additionColor: "#34C759",
+              deletionColor: "#FF3B30",
+              showHiddenWhitespace: true,
+            },
+          },
+          suggestions: [],
+        },
+      },
+    });
+    await expect(events.next()).rejects.toThrow(TransportProtocolError);
+    await session.close();
+  });
+
   it("normalizes an invalid endpoint into the generic fatal connection contract", async () => {
     const transport = new RefineTransport({
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
@@ -185,6 +368,21 @@ describe("Refine transport handshake", () => {
 
     const connection = transport.connect(new AbortController().signal);
     await expect(connection).rejects.toBeInstanceOf(EngineConnectionError);
+    await expect(connection).rejects.toMatchObject({ recoverability: "fatal" });
+  });
+
+  it("preserves an incompatible endpoint protocol as an explicit fatal error", async () => {
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      endpointLocator: {
+        locate: async () => {
+          throw new EndpointProtocolVersionError(1);
+        },
+      },
+    });
+
+    const connection = transport.connect(new AbortController().signal);
+    await expect(connection).rejects.toThrow(IncompatibleProtocolError);
     await expect(connection).rejects.toMatchObject({ recoverability: "fatal" });
   });
 
@@ -201,7 +399,7 @@ describe("Refine transport handshake", () => {
             sent.push(value);
             frames.push({
               type: "welcome",
-              protocol: { major: 1, minor: 0 },
+              protocol: { major: 2, minor: 0 },
               serverEpoch: "epoch-1",
               runResumed: false,
               limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -260,7 +458,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 1, minor: 0 },
+        protocol: { major: 2, minor: 0 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -296,7 +494,7 @@ function endpointLocator(): EndpointLocator {
       socketPath: "/private/tmp/refine-1/integration.sock",
       launchToken: "secret-1",
       serverEpoch: "epoch-1",
-      protocolMajor: 1,
+      protocolMajor: 2,
       pid: 123,
     }),
   };

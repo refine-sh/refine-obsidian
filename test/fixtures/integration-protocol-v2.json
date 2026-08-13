@@ -1,7 +1,7 @@
 {
   "hello": {
     "type": "hello",
-    "protocol": { "major": 1, "minor": 0 },
+    "protocol": { "major": 2, "minor": 0 },
     "client": {
       "id": "refine-obsidian",
       "version": "0.1.0",
@@ -13,7 +13,7 @@
   },
   "welcome": {
     "type": "welcome",
-    "protocol": { "major": 1, "minor": 0 },
+    "protocol": { "major": 2, "minor": 0 },
     "serverEpoch": "epoch-fixture",
     "runResumed": false,
     "limits": {
@@ -52,6 +52,18 @@
         "documentRevision": "fixture:0",
         "status": "complete",
         "coverage": "full",
+        "appearance": {
+          "highlight": {
+            "style": "underline",
+            "grammarColor": "#FF2D55",
+            "fluencyColor": "#007AFF"
+          },
+          "diff": {
+            "additionColor": "#34C759",
+            "deletionColor": "#FF3B30",
+            "showHiddenWhitespace": true
+          }
+        },
         "suggestions": [
           {
             "id": "suggestion-article",
@@ -74,7 +86,9 @@
               { "location": 21, "length": 1 }
             ],
             "diff": [
-              { "kind": "insert", "text": " " }
+              { "kind": "unchanged", "text": "link" },
+              { "kind": "insert", "text": " " },
+              { "kind": "unchanged", "text": "or" }
             ],
             "availableActions": ["apply", "dismiss"]
           }

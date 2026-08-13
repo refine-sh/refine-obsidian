@@ -23,6 +23,7 @@ import {
 
 export interface ObsidianWritingHostOptions {
   readonly sessionId?: string;
+  readonly onPresentation?: (snapshot: PresentationSnapshot) => void;
 }
 
 const DOCUMENT_SOURCE_ID = "document";
@@ -36,6 +37,7 @@ const hostViewBridges = new WeakMap<EditorView, HostViewBridge>();
 
 export class ObsidianWritingHost {
   private readonly bridge: HostViewBridge;
+  private readonly onPresentation: (snapshot: PresentationSnapshot) => void;
   private readonly sessionId: string;
   private incarnation = 0;
   private currentText: string;
@@ -48,6 +50,7 @@ export class ObsidianWritingHost {
     options: ObsidianWritingHostOptions = {},
   ) {
     this.sessionId = options.sessionId ?? crypto.randomUUID();
+    this.onPresentation = options.onPresentation ?? (() => undefined);
     this.currentText = this.view.state.doc.toString();
     const existing = hostViewBridges.get(view);
     if (existing) {
@@ -176,6 +179,7 @@ export class ObsidianWritingHost {
       return;
     }
     installPresentation(this.view, snapshot, actions);
+    this.onPresentation(snapshot);
   }
 
   requestCheck(intent?: CheckIntent): void {

@@ -7,7 +7,7 @@ export interface EndpointDescriptor {
   readonly socketPath: string;
   readonly launchToken: string;
   readonly serverEpoch: string;
-  readonly protocolMajor: 1;
+  readonly protocolMajor: 2;
   readonly pid: number;
 }
 
@@ -39,6 +39,15 @@ export class EndpointSecurityError extends EndpointDescriptorError {
   constructor(message: string) {
     super(message);
     this.name = "EndpointSecurityError";
+  }
+}
+
+export class EndpointProtocolVersionError extends EndpointDescriptorError {
+  constructor(readonly receivedProtocolMajor: unknown) {
+    super(
+      `Endpoint protocolMajor ${String(receivedProtocolMajor)} is incompatible; expected 2`,
+    );
+    this.name = "EndpointProtocolVersionError";
   }
 }
 
@@ -138,8 +147,8 @@ export function parseEndpointDescriptor(text: string): EndpointDescriptor {
   if (typeof value.serverEpoch !== "string" || value.serverEpoch.length === 0) {
     throw new EndpointDescriptorError("Endpoint serverEpoch must be a nonempty string");
   }
-  if (value.protocolMajor !== 1) {
-    throw new EndpointDescriptorError("Endpoint protocolMajor must be 1");
+  if (value.protocolMajor !== 2) {
+    throw new EndpointProtocolVersionError(value.protocolMajor);
   }
   if (!Number.isSafeInteger(value.pid) || (value.pid as number) <= 0) {
     throw new EndpointDescriptorError("Endpoint pid must be a positive integer");
@@ -150,7 +159,7 @@ export function parseEndpointDescriptor(text: string): EndpointDescriptor {
     socketPath: value.socketPath,
     launchToken: value.launchToken,
     serverEpoch: value.serverEpoch,
-    protocolMajor: 1,
+    protocolMajor: 2,
     pid: value.pid as number,
   };
 }

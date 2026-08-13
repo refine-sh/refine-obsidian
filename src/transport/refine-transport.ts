@@ -6,6 +6,7 @@ import {
 } from "./engine-connection-error";
 import {
   EndpointDescriptorError,
+  EndpointProtocolVersionError,
   FileEndpointLocator,
   type EndpointLocator,
 } from "./endpoint-locator";
@@ -74,6 +75,13 @@ export class EndpointReplacedError extends TransportProtocolError {
   }
 }
 
+export class IncompatibleProtocolError extends TransportProtocolError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, "fatal", options);
+    this.name = "IncompatibleProtocolError";
+  }
+}
+
 export class RefineTransport {
   private readonly client: IntegrationClientIdentity;
   private readonly endpointLocator: EndpointLocator;
@@ -93,6 +101,9 @@ export class RefineTransport {
     try {
       endpoint = await this.endpointLocator.locate();
     } catch (error) {
+      if (error instanceof EndpointProtocolVersionError) {
+        throw new IncompatibleProtocolError(error.message, { cause: error });
+      }
       if (error instanceof EndpointDescriptorError) {
         throw new EngineConnectionError(
           "Refine endpoint metadata is invalid",
@@ -209,10 +220,16 @@ function decodeWelcome(value: unknown): WelcomeFrame {
   const object = requireRecord(value, "welcome");
   const protocol = requireRecord(object.protocol, "welcome.protocol");
   const limits = requireRecord(object.limits, "welcome.limits");
+  if (!isUInt32(protocol.major) || !isUInt32(protocol.minor)) {
+    throw new TransportProtocolError("Malformed welcome protocol version");
+  }
+  if (protocol.major !== PROTOCOL_MAJOR || protocol.minor !== PROTOCOL_MINOR) {
+    throw new IncompatibleProtocolError(
+      `Refine protocol ${protocol.major}.${protocol.minor} is incompatible with protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}`,
+    );
+  }
   if (
     object.type !== "welcome" ||
-    protocol.major !== PROTOCOL_MAJOR ||
-    protocol.minor !== PROTOCOL_MINOR ||
     typeof object.serverEpoch !== "string" ||
     object.serverEpoch.length === 0 ||
     typeof object.runResumed !== "boolean" ||
@@ -224,7 +241,7 @@ function decodeWelcome(value: unknown): WelcomeFrame {
   }
   return {
     type: "welcome",
-    protocol: { major: 1, minor: 0 },
+    protocol: { major: 2, minor: 0 },
     serverEpoch: object.serverEpoch,
     runResumed: object.runResumed,
     limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -317,6 +334,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
     throw new TransportProtocolError("Malformed presentation content");
   }
   const suggestions = content.suggestions.map(decodePresentedSuggestion);
+  const appearance = decodePresentationAppearance(content.appearance);
   if (content.status === "complete") {
     if (content.coverage !== "full" && content.coverage !== "partial") {
       throw new TransportProtocolError("Complete presentation requires coverage");
@@ -325,6 +343,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
       documentRevision: content.documentRevision,
       status: "complete",
       coverage: content.coverage,
+      appearance,
       suggestions,
     };
   }
@@ -336,14 +355,67 @@ function decodePresentationContent(value: unknown): PresentationContent {
       documentRevision: content.documentRevision,
       status: "unavailable",
       unavailableReason: content.unavailableReason,
+      appearance,
       suggestions,
     };
   }
   return {
     documentRevision: content.documentRevision,
     status: content.status,
+    appearance,
     suggestions,
   };
+}
+
+function decodePresentationAppearance(
+  value: unknown,
+): import("../integration/types").PresentationAppearance {
+  const appearance = requireRecord(value, "presentation.appearance");
+  const highlight = requireRecord(appearance.highlight, "presentation.appearance.highlight");
+  const diff = requireRecord(appearance.diff, "presentation.appearance.diff");
+  if (
+    !hasExactKeys(appearance, ["highlight", "diff"]) ||
+    !hasExactKeys(highlight, ["style", "grammarColor", "fluencyColor"]) ||
+    !hasExactKeys(diff, [
+      "additionColor",
+      "deletionColor",
+      "showHiddenWhitespace",
+    ]) ||
+    (highlight.style !== "underline" &&
+      highlight.style !== "dashedUnderline" &&
+      highlight.style !== "highlight") ||
+    !isCanonicalRGBColor(highlight.grammarColor) ||
+    !isCanonicalRGBColor(highlight.fluencyColor) ||
+    !isCanonicalRGBColor(diff.additionColor) ||
+    !isCanonicalRGBColor(diff.deletionColor) ||
+    typeof diff.showHiddenWhitespace !== "boolean"
+  ) {
+    throw new TransportProtocolError("Malformed presentation appearance");
+  }
+  return {
+    highlight: {
+      style: highlight.style,
+      grammarColor: highlight.grammarColor,
+      fluencyColor: highlight.fluencyColor,
+    },
+    diff: {
+      additionColor: diff.additionColor,
+      deletionColor: diff.deletionColor,
+      showHiddenWhitespace: diff.showHiddenWhitespace,
+    },
+  };
+}
+
+function isCanonicalRGBColor(value: unknown): value is string {
+  return typeof value === "string" && /^#[0-9A-F]{6}$/.test(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const actual = Object.keys(value);
+  return actual.length === expected.length && expected.every((key) => key in value);
 }
 
 function decodePresentedSuggestion(
@@ -485,6 +557,7 @@ function isUnavailableReason(
 ): value is
   | "disconnected"
   | "engineUnavailable"
+  | "checkFailed"
   | "invalidDocument"
   | "unsupportedSource"
   | "resourceLimit";
@@ -492,6 +565,7 @@ function isUnavailableReason(value: unknown): boolean {
   return (
     value === "disconnected" ||
     value === "engineUnavailable" ||
+    value === "checkFailed" ||
     value === "invalidDocument" ||
     value === "unsupportedSource" ||
     value === "resourceLimit"
