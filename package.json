@@ -1,0 +1,31 @@
+{
+  "name": "refine-obsidian",
+  "version": "0.1.0",
+  "description": "Native Obsidian integration for Refine writing suggestions",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "build": "npm run typecheck && node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "obsidian",
+    "grammar",
+    "writing"
+  ],
+  "author": "Runjuu",
+  "license": "MIT",
+  "devDependencies": {
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
+    "@types/node": "^24.3.0",
+    "esbuild": "0.28.2",
+    "jsdom": "30.0.1",
+    "obsidian": "1.13.1",
+    "typescript": "^5.9.2",
+    "vitest": "4.1.0"
+  }
+}

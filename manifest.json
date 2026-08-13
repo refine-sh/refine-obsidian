@@ -1,0 +1,9 @@
+{
+  "id": "refine",
+  "name": "Refine",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Shows and safely applies Refine writing suggestions in Markdown source.",
+  "author": "Runjuu",
+  "isDesktopOnly": true
+}

@@ -1,0 +1,129 @@
+{
+  "hello": {
+    "type": "hello",
+    "protocol": { "major": 1, "minor": 0 },
+    "client": {
+      "id": "refine-obsidian",
+      "version": "0.1.0",
+      "host": "obsidian"
+    },
+    "runId": "run-fixture",
+    "launchToken": "token-fixture",
+    "capabilities": []
+  },
+  "welcome": {
+    "type": "welcome",
+    "protocol": { "major": 1, "minor": 0 },
+    "serverEpoch": "epoch-fixture",
+    "runResumed": false,
+    "limits": {
+      "maxFrameBytes": 4194304,
+      "maxSources": 2
+    },
+    "capabilities": []
+  },
+  "openDocument": {
+    "type": "command",
+    "sequence": 1,
+    "id": "command-open",
+    "command": {
+      "type": "openDocument",
+      "snapshot": {
+        "revision": "fixture:0",
+        "sources": [
+          {
+            "sourceId": "document",
+            "text": "[create an link](URL)or 😀",
+            "sourceSyntax": "mixed"
+          }
+        ]
+      }
+    }
+  },
+  "presentation": {
+    "type": "event",
+    "sequence": 1,
+    "epoch": "epoch-fixture",
+    "causeCommandId": "command-open",
+    "event": {
+      "type": "presentationContentReplaced",
+      "checkId": "check-fixture",
+      "content": {
+        "documentRevision": "fixture:0",
+        "status": "complete",
+        "coverage": "full",
+        "suggestions": [
+          {
+            "id": "suggestion-article",
+            "sourceId": "document",
+            "kind": "grammar",
+            "highlightRanges": [
+              { "location": 8, "length": 2 }
+            ],
+            "diff": [
+              { "kind": "delete", "text": "an" },
+              { "kind": "insert", "text": "a" }
+            ],
+            "availableActions": ["apply", "dismiss"]
+          },
+          {
+            "id": "suggestion-space",
+            "sourceId": "document",
+            "kind": "grammar",
+            "highlightRanges": [
+              { "location": 21, "length": 1 }
+            ],
+            "diff": [
+              { "kind": "insert", "text": " " }
+            ],
+            "availableActions": ["apply", "dismiss"]
+          }
+        ]
+      }
+    }
+  },
+  "applyRequested": {
+    "type": "event",
+    "sequence": 2,
+    "epoch": "epoch-fixture",
+    "causeCommandId": "command-apply",
+    "event": {
+      "type": "applyRequested",
+      "actionId": "action-fixture",
+      "transactionId": "transaction-fixture",
+      "request": {
+        "expectedRevision": "fixture:0",
+        "sourceId": "document",
+        "edits": [
+          {
+            "range": { "location": 21, "length": 0 },
+            "expectedText": "",
+            "replacement": " "
+          }
+        ]
+      }
+    }
+  },
+  "completeApply": {
+    "type": "command",
+    "sequence": 3,
+    "id": "command-receipt",
+    "command": {
+      "type": "completeApply",
+      "transactionId": "transaction-fixture",
+      "outcome": {
+        "status": "applied",
+        "snapshot": {
+          "revision": "fixture:1",
+          "sources": [
+            {
+              "sourceId": "document",
+              "text": "[create an link](URL) or 😀",
+              "sourceSyntax": "mixed"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
