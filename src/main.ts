@@ -18,7 +18,9 @@ import {
   createRefineStatusBarController,
   type RefineStatusBarActivationEvent,
   type RefineStatusBarController,
+  type RefineStatusBarState,
   statusBarStateForSession,
+  statusMenuShowsCheckControls,
 } from "./obsidian/status-bar";
 import {
   IncompatibleProtocolError,
@@ -30,6 +32,7 @@ export default class RefinePlugin extends Plugin {
   private editors: ObsidianEditorRegistry | undefined;
   private statusBar: RefineStatusBarController | undefined;
   private statusItem: HTMLElement | undefined;
+  private statusState: RefineStatusBarState = { type: "noEditor" };
 
   onload(): void {
     const statusItem = this.addStatusBarItem();
@@ -79,7 +82,8 @@ export default class RefinePlugin extends Plugin {
         );
       },
       onStateChange: (state) => {
-        this.statusBar?.setState(statusBarStateForSession(state));
+        this.statusState = statusBarStateForSession(state);
+        this.statusBar?.setState(this.statusState);
         this.refreshStatusTooltip();
       },
     });
@@ -150,20 +154,22 @@ export default class RefinePlugin extends Plugin {
       this.statusItem?.getAttribute("aria-label")
         ?.replace(/\. Open Refine menu$/, "") ?? "Refine";
     menu.addItem((item) => item.setTitle(status).setIsLabel(true));
-    menu.addSeparator();
-    menu.addItem((item) =>
-      item
-        .setTitle("Check current note")
-        .setIcon("spell-check-2")
-        .setDisabled(this.activeEditorView() === undefined)
-        .onClick(() => this.requestCheckForActiveEditor()),
-    );
-    menu.addItem((item) =>
-      item
-        .setTitle("Automatic checks follow Refine settings")
-        .setIcon("settings-2")
-        .setDisabled(true),
-    );
+    if (statusMenuShowsCheckControls(this.statusState)) {
+      menu.addSeparator();
+      menu.addItem((item) =>
+        item
+          .setTitle("Check current note")
+          .setIcon("spell-check-2")
+          .setDisabled(this.activeEditorView() === undefined)
+          .onClick(() => this.requestCheckForActiveEditor()),
+      );
+      menu.addItem((item) =>
+        item
+          .setTitle("Automatic checks follow Refine settings")
+          .setIcon("settings-2")
+          .setDisabled(true),
+      );
+    }
 
     if (event instanceof MouseEvent) {
       menu.showAtMouseEvent(event);

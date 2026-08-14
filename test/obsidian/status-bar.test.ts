@@ -8,9 +8,15 @@ import type { ObsidianSessionState } from "../../src/obsidian/session-manager";
 import {
   createRefineStatusBarController,
   statusBarStateForSession,
+  statusMenuShowsCheckControls,
 } from "../../src/obsidian/status-bar";
 
 describe("Refine status bar", () => {
+  it("hides check controls from the menu while Refine is disconnected", () => {
+    expect(statusMenuShowsCheckControls({ type: "disconnected" })).toBe(false);
+    expect(statusMenuShowsCheckControls({ type: "idle" })).toBe(true);
+  });
+
   it("starts in an accessible no-editor state", () => {
     const element = document.createElement("div");
     const renderIcon = vi.fn((target: HTMLElement, icon: string) => {
