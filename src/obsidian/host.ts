@@ -19,11 +19,13 @@ import {
   clearPresentation,
   installPresentation,
   refinePresentationExtension,
+  type ExplanationRenderer,
 } from "./presentation";
 
 export interface ObsidianWritingHostOptions {
   readonly sessionId?: string;
   readonly onPresentation?: (snapshot: PresentationSnapshot) => void;
+  readonly renderExplanation?: ExplanationRenderer;
 }
 
 const DOCUMENT_SOURCE_ID = "document";
@@ -39,6 +41,7 @@ export class ObsidianWritingHost {
   private readonly bridge: HostViewBridge;
   private readonly onPresentation: (snapshot: PresentationSnapshot) => void;
   private readonly sessionId: string;
+  private readonly renderExplanation: ExplanationRenderer | undefined;
   private incarnation = 0;
   private currentText: string;
   private observations: AsyncQueue<HostObservation> | undefined;
@@ -51,6 +54,7 @@ export class ObsidianWritingHost {
   ) {
     this.sessionId = options.sessionId ?? crypto.randomUUID();
     this.onPresentation = options.onPresentation ?? (() => undefined);
+    this.renderExplanation = options.renderExplanation;
     this.currentText = this.view.state.doc.toString();
     const existing = hostViewBridges.get(view);
     if (existing) {
@@ -174,7 +178,12 @@ export class ObsidianWritingHost {
       clearPresentation(this.view);
       return;
     }
-    installPresentation(this.view, snapshot, actions);
+    installPresentation(
+      this.view,
+      snapshot,
+      actions,
+      this.renderExplanation,
+    );
     this.onPresentation(snapshot);
   }
 

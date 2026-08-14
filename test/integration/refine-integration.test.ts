@@ -23,6 +23,12 @@ import type {
   ServerEventEnvelope,
 } from "../../src/transport/wire";
 
+const TEST_ATTRIBUTION = {
+  languageDisplayName: "English (American)",
+  textDirection: "ltr" as const,
+  checkModelDisplayName: "On-Device (Gemma)",
+};
+
 describe("RefineIntegration", () => {
   it("opens canonical source, presents engine results, and completes Apply exactly once", async () => {
     const host = new FakeHost(snapshot("doc:0", "[create an link](URL)or"));
@@ -51,6 +57,7 @@ describe("RefineIntegration", () => {
             id: "suggestion-1",
             sourceId: "document",
             kind: "grammar",
+            attribution: TEST_ATTRIBUTION,
             highlightRanges: [{ location: 8, length: 2 }],
             diff: [
               { kind: "delete", text: "an" },
@@ -142,6 +149,7 @@ describe("RefineIntegration", () => {
             id: "old",
             sourceId: "document",
             kind: "grammar",
+            attribution: TEST_ATTRIBUTION,
             highlightRanges: [{ location: 7, length: 2 }],
             diff: [],
             availableActions: ["apply"],
@@ -858,6 +866,7 @@ describe("RefineIntegration", () => {
             id: "dismiss-me",
             sourceId: "document",
             kind: "grammar",
+            attribution: TEST_ATTRIBUTION,
             highlightRanges: [{ location: 7, length: 2 }],
             diff: [],
             availableActions: ["apply", "dismiss"],
@@ -889,6 +898,145 @@ describe("RefineIntegration", () => {
     host.observations.close();
     await run;
   });
+
+  it("keeps the current presentation and action object usable when Report can retry", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    const reportPresentation = suggestionPresentation("check-report", "report-me");
+    engine.emit({
+      ...reportPresentation,
+      content: {
+        ...reportPresentation.content,
+        suggestions: reportPresentation.content.suggestions.map((suggestion) => ({
+          ...suggestion,
+          availableActions: ["report"],
+        })),
+      },
+    });
+    await vi.waitFor(() => expect(host.currentPresentation?.suggestions).toHaveLength(1));
+    const cardActions = host.currentActions;
+    if (!cardActions) {
+      throw new Error("expected suggestion actions");
+    }
+    const presentationCount = host.presentations.length;
+
+    const firstReport = cardActions.report("report-me");
+    await vi.waitFor(() =>
+      expect(
+        engine.commands.filter(({ command }) => command.type === "performAction"),
+      ).toHaveLength(1),
+    );
+    const firstPerform = engine.commands.find(
+      ({ command }) => command.type === "performAction",
+    )?.command;
+    if (!firstPerform || firstPerform.type !== "performAction") {
+      throw new Error("expected Report action");
+    }
+    engine.emit({
+      type: "actionRejected",
+      actionId: firstPerform.actionId,
+      reason: "reportingUnavailable",
+    });
+
+    await expect(firstReport).resolves.toEqual({
+      status: "unavailable",
+      reason: "reportingUnavailable",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(host.presentations).toHaveLength(presentationCount);
+
+    const retry = cardActions.report("report-me");
+    await vi.waitFor(() =>
+      expect(
+        engine.commands.filter(({ command }) => command.type === "performAction"),
+      ).toHaveLength(2),
+    );
+    const retryPerform = engine.commands.filter(
+      ({ command }) => command.type === "performAction",
+    ).at(-1)?.command;
+    if (!retryPerform || retryPerform.type !== "performAction") {
+      throw new Error("expected retried Report action");
+    }
+    engine.emit({ type: "actionCompleted", actionId: retryPerform.actionId });
+    await expect(retry).resolves.toEqual({ status: "completed" });
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it.each([
+    {
+      rejection: "stale" as const,
+      expected: { status: "stale" as const },
+    },
+    {
+      rejection: "engineUnavailable" as const,
+      expected: {
+        status: "unavailable" as const,
+        reason: "engineUnavailable" as const,
+      },
+    },
+  ])(
+    "terminates Explain with a visible $rejection update when rejected before starting",
+    async ({ rejection, expected }) => {
+      const host = new FakeHost(snapshot("doc:0", "create an link"));
+      const engine = new FakeEngine();
+      const integration = createRefineIntegration({ enginePort: engine });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+      const explainPresentation = suggestionPresentation("check-explain", "explain-me");
+      engine.emit({
+        ...explainPresentation,
+        content: {
+          ...explainPresentation.content,
+          suggestions: explainPresentation.content.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["explain"],
+          })),
+        },
+      });
+      await vi.waitFor(() => expect(host.currentPresentation?.suggestions).toHaveLength(1));
+      const explanation = host.currentActions
+        ?.explain("explain-me")[Symbol.asyncIterator]();
+      if (!explanation) {
+        throw new Error("expected Explain action");
+      }
+
+      const terminal = explanation.next();
+      await vi.waitFor(() =>
+        expect(
+          engine.commands.filter(({ command }) => command.type === "performAction"),
+        ).toHaveLength(1),
+      );
+      const perform = engine.commands.find(
+        ({ command }) => command.type === "performAction",
+      )?.command;
+      if (!perform || perform.type !== "performAction") {
+        throw new Error("expected Explain action command");
+      }
+      engine.emit({
+        type: "actionRejected",
+        actionId: perform.actionId,
+        reason: rejection,
+      });
+
+      await expect(terminal).resolves.toEqual({ done: false, value: expected });
+      await expect(explanation.next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+
+      controller.abort();
+      host.observations.close();
+      await run;
+    },
+  );
 
   it("rejects a late Apply request after a newer check supersedes its suggestion", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
@@ -1277,6 +1425,7 @@ function suggestionPresentation(
           id: suggestionId,
           sourceId: "document",
           kind: "grammar",
+          attribution: TEST_ATTRIBUTION,
           highlightRanges: [{ location: 7, length: 2 }],
           diff: [],
           availableActions: ["apply"],

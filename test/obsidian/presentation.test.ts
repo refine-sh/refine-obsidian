@@ -7,6 +7,7 @@ import { EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createRefineIntegration } from "../../src/integration/refine-integration";
 import type {
   ExplanationUpdate,
   PresentationSnapshot,
@@ -14,6 +15,15 @@ import type {
 } from "../../src/integration/types";
 import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
 import { ObsidianWritingHost } from "../../src/obsidian/host";
+import { AsyncQueue } from "../../src/shared/async-queue";
+import type {
+  CommandReceipt,
+  RefineTransportSession,
+} from "../../src/transport/refine-transport";
+import type {
+  ClientCommand,
+  ServerEventEnvelope,
+} from "../../src/transport/wire";
 
 if (typeof Range.prototype.getClientRects !== "function") {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -83,6 +93,428 @@ describe("Obsidian presentation", () => {
 
     button?.click();
     await vi.waitFor(() => expect(apply).toHaveBeenCalledWith("grammar-1"));
+  });
+
+  it("shows native-style attribution and streams an explanation with its model", async () => {
+    const rendered: string[] = [];
+    const renderExplanation = vi.fn((markdown: string, element: HTMLElement) => {
+      rendered.push(markdown);
+      element.textContent = `rendered:${markdown}`;
+    });
+    const { host, view } = createHost(
+      "[create an link](URL)or",
+      "explain",
+      [],
+      renderExplanation,
+    );
+    async function* explain(): AsyncIterable<ExplanationUpdate> {
+      yield {
+        status: "started",
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "ltr",
+          modelDisplayName: "OpenRouter (GPT-5.6)",
+        },
+      };
+      yield { status: "streaming", text: "First line.\nPartial" };
+      yield { status: "completed", text: "First line.\nSecond line." };
+    }
+    const baseSnapshot = presentation("explain:0");
+    const snapshot: PresentationSnapshot = {
+      ...baseSnapshot,
+      suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+        ...suggestion,
+        availableActions: ["apply", "dismiss", "explain", "report"],
+      })),
+    };
+    await host.present(snapshot, actions({ explain }));
+    await hover(view, document.querySelector(".refine-suggestion"), 9);
+
+    expect(document.querySelector(".refine-tooltip__caption")?.textContent).toBe(
+      "Grammar - English (American)",
+    );
+    expect(document.querySelector(".refine-tooltip__model")?.textContent).toBe("");
+    const explainButton = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Explain");
+    explainButton?.click();
+
+    await vi.waitFor(() => expect(rendered.at(-1)).toBe("First line.\nSecond line."));
+    expect(document.querySelector(".refine-tooltip__model")?.textContent).toBe(
+      "On-Device (Gemma 4 E4B)",
+    );
+    expect(document.querySelector(".refine-tooltip__explanation-section")?.textContent)
+      .toContain("Explanation - English (American)");
+    expect(document.querySelector(".refine-tooltip__explanation-section")?.textContent)
+      .toContain("OpenRouter (GPT-5.6)");
+    expect(document.querySelector(".refine-tooltip__explanation")?.textContent).toBe(
+      "rendered:First line.\nSecond line.",
+    );
+  });
+
+  it("makes Explain retryable when it is rejected before starting", async () => {
+    let attempt = 0;
+    async function* rejected(): AsyncIterable<ExplanationUpdate> {
+      yield { status: "unavailable", reason: "engineUnavailable" };
+    }
+    async function* completed(): AsyncIterable<ExplanationUpdate> {
+      yield {
+        status: "started",
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "ltr",
+          modelDisplayName: "On-Device (Gemma)",
+        },
+      };
+      yield { status: "completed", text: "Explanation." };
+    }
+    const explain = vi.fn(() => {
+      attempt += 1;
+      return attempt === 1 ? rejected() : completed();
+    });
+    const { host, view } = createHost("[create an link](URL)or", "explain-retry");
+    const baseSnapshot = presentation("explain-retry:0");
+    await host.present(
+      {
+        ...baseSnapshot,
+        suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+          ...suggestion,
+          availableActions: ["explain"],
+        })),
+      },
+      actions({ explain }),
+    );
+    await hover(view, document.querySelector(".refine-suggestion"), 9);
+    const card = document.querySelector<HTMLElement>(".refine-tooltip");
+    const explainButton = card?.querySelector<HTMLButtonElement>("button");
+
+    explainButton?.click();
+
+    await vi.waitFor(() => expect(explainButton?.textContent).toBe("Explain"));
+    expect(explainButton?.disabled).toBe(false);
+    expect(
+      card?.querySelector(".refine-tooltip__explanation-section .refine-tooltip__status")
+        ?.textContent,
+    ).toBe("No explanation available.");
+    expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+    explainButton?.click();
+
+    await vi.waitFor(() => expect(explain).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(explainButton?.isConnected).toBe(false));
+    expect(document.querySelector(".refine-tooltip")).toBe(card);
+  });
+
+  it("terminates a never-ending explanation when its card is disposed", async () => {
+    let nextCall = 0;
+    let resolvePending: ((result: IteratorResult<ExplanationUpdate>) => void) | undefined;
+    const returnIterator = vi.fn(
+      async (): Promise<IteratorResult<ExplanationUpdate>> => ({
+        done: true,
+        value: undefined,
+      }),
+    );
+    const iterator: AsyncIterableIterator<ExplanationUpdate> = {
+      next: vi.fn((): Promise<IteratorResult<ExplanationUpdate>> => {
+        nextCall += 1;
+        if (nextCall === 1) {
+          return Promise.resolve({
+            done: false,
+            value: {
+              status: "started",
+              attribution: {
+                languageDisplayName: "English (American)",
+                textDirection: "ltr",
+                modelDisplayName: "On-Device (Gemma)",
+              },
+            },
+          });
+        }
+        if (nextCall === 2) {
+          return Promise.resolve({
+            done: false,
+            value: { status: "streaming", text: "Rendered line.\n" },
+          });
+        }
+        return new Promise((resolve) => {
+          resolvePending = resolve;
+        });
+      }),
+      return: returnIterator,
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    const cleanup = vi.fn();
+    const renderExplanation = vi.fn((markdown: string, element: HTMLElement) => {
+      element.textContent = markdown;
+      return cleanup;
+    });
+    const { host, view } = createHost(
+      "[create an link](URL)or",
+      "explain-dispose",
+      [],
+      renderExplanation,
+    );
+    const baseSnapshot = presentation("explain-dispose:0");
+    await host.present(
+      {
+        ...baseSnapshot,
+        suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+          ...suggestion,
+          availableActions: ["explain"],
+        })),
+      },
+      actions({ explain: () => iterator }),
+    );
+    await hover(view, document.querySelector(".refine-suggestion"), 9);
+    document.querySelector<HTMLButtonElement>(".refine-tooltip button")?.click();
+    await vi.waitFor(() => expect(renderExplanation).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(iterator.next).toHaveBeenCalledTimes(3));
+
+    await host.present(emptyPresentation("explain-dispose:0", 2), actions());
+
+    expect(document.querySelector(".refine-tooltip")).toBeNull();
+    expect(returnIterator).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+
+    resolvePending?.({
+      done: false,
+      value: { status: "streaming", text: "Late detached update.\n" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(renderExplanation).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("disposes a real runtime Explain stream without waiting for a server event", async () => {
+    const { host, view } = createHost(
+      "[create an link](URL)or",
+      "runtime-explain-dispose",
+    );
+    const present = host.present.bind(host);
+    const returnStates: { settled: boolean }[] = [];
+    host.present = (snapshot, suggestionActions): void => {
+      present(snapshot, {
+        ...suggestionActions,
+        explain: (suggestionId): AsyncIterable<ExplanationUpdate> => {
+          const underlying = suggestionActions
+            .explain(suggestionId)[Symbol.asyncIterator]();
+          const instrumented: AsyncIterableIterator<ExplanationUpdate> = {
+            next: () => underlying.next(),
+            return: () => {
+              const state = { settled: false };
+              returnStates.push(state);
+              const completion = underlying.return?.() ?? Promise.resolve({
+                done: true as const,
+                value: undefined,
+              });
+              void Promise.resolve(completion).then(
+                () => {
+                  state.settled = true;
+                },
+                () => {
+                  state.settled = true;
+                },
+              );
+              return completion;
+            },
+            [Symbol.asyncIterator]() {
+              return this;
+            },
+          };
+          return instrumented;
+        },
+      });
+    };
+
+    const events = new AsyncQueue<ServerEventEnvelope>();
+    const commands: { command: ClientCommand; id: string }[] = [];
+    let commandSequence = 0;
+    let eventSequence = 0;
+    const enginePort = {
+      connect: async (): Promise<RefineTransportSession> => ({
+        serverEpoch: "epoch-card",
+        runResumed: false,
+        send: async (command): Promise<CommandReceipt> => {
+          commandSequence += 1;
+          const id = `command-${commandSequence}`;
+          commands.push({ command, id });
+          return { sequence: commandSequence, id };
+        },
+        events: () => events,
+        close: async () => events.close(),
+      }),
+    };
+    const emit = (event: ServerEventEnvelope["event"]): void => {
+      eventSequence += 1;
+      events.push({
+        type: "event",
+        sequence: eventSequence,
+        epoch: "epoch-card",
+        event,
+      });
+    };
+    const controller = new AbortController();
+    const run = createRefineIntegration({ enginePort }).run({
+      host,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() =>
+      expect(commands[0]?.command.type).toBe("openDocument"),
+    );
+    const open = commands[0]?.command;
+    if (!open || open.type !== "openDocument") {
+      throw new Error("expected open document command");
+    }
+    emit({
+      type: "presentationContentReplaced",
+      checkId: "check-runtime-explain",
+      content: {
+        documentRevision: open.snapshot.revision,
+        status: "complete",
+        coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        suggestions: [
+          {
+            id: "runtime-explain",
+            sourceId: "document",
+            kind: "grammar",
+            attribution: testAttribution,
+            highlightRanges: [{ location: 8, length: 2 }],
+            diff: [],
+            availableActions: ["explain"],
+          },
+        ],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(document.querySelector(".refine-suggestion")).not.toBeNull(),
+    );
+    const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+
+    highlight?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    document.querySelector<HTMLButtonElement>(".refine-tooltip button")?.click();
+    await vi.waitFor(() =>
+      expect(
+        commands.filter(({ command }) => command.type === "performAction"),
+      ).toHaveLength(1),
+    );
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    expect(document.querySelector(".refine-tooltip")).toBeNull();
+    expect(returnStates).toHaveLength(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(returnStates[0]?.settled).toBe(true);
+
+    highlight?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    document.querySelector<HTMLButtonElement>(".refine-tooltip button")?.click();
+    await vi.waitFor(() =>
+      expect(
+        commands.filter(({ command }) => command.type === "performAction"),
+      ).toHaveLength(2),
+    );
+
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    controller.abort();
+    await run;
+  });
+
+  it("labels a mixed suggestion as grammar and fluency", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost("[create an link](URL)or", "mixed-label");
+      const baseSnapshot = presentation("mixed-label:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            kind: "mixed" as const,
+          })),
+        },
+        actions(),
+      );
+
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+
+      expect(document.querySelector(".refine-tooltip__caption")?.textContent).toBe(
+        "Grammar & Fluency - English (American)",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports feedback without dismissing the suggestion card", async () => {
+    const report = vi.fn(async () => ({ status: "completed" as const }));
+    const { host, view } = createHost("[create an link](URL)or", "report");
+    const baseSnapshot = presentation("report:0");
+    const snapshot: PresentationSnapshot = {
+      ...baseSnapshot,
+      suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+        ...suggestion,
+        availableActions: ["apply", "dismiss", "explain", "report"],
+      })),
+    };
+    await host.present(snapshot, actions({ report }));
+    await hover(view, document.querySelector(".refine-suggestion"), 9);
+    const reportButton = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent === "Report");
+
+    reportButton?.click();
+
+    await vi.waitFor(() => expect(report).toHaveBeenCalledWith("grammar-1"));
+    expect(document.querySelector(".refine-tooltip")).not.toBeNull();
+    expect(reportButton?.textContent).toBe("Reported");
+    expect(document.querySelector(".refine-tooltip__feedback-status")?.textContent).toContain(
+      "Thanks for the report.",
+    );
+  });
+
+  it("keeps a failed Report card open and retries from the same action", async () => {
+    let attempts = 0;
+    const report = vi.fn(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? { status: "unavailable" as const, reason: "reportingUnavailable" as const }
+        : { status: "completed" as const };
+    });
+    const { host, view } = createHost("[create an link](URL)or", "report-retry");
+    const baseSnapshot = presentation("report-retry:0");
+    await host.present(
+      {
+        ...baseSnapshot,
+        suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+          ...suggestion,
+          availableActions: ["report"],
+        })),
+      },
+      actions({ report }),
+    );
+    await hover(view, document.querySelector(".refine-suggestion"), 9);
+    const card = document.querySelector<HTMLElement>(".refine-tooltip");
+    const reportButton = card?.querySelector<HTMLButtonElement>("button");
+
+    reportButton?.click();
+
+    await vi.waitFor(() => expect(reportButton?.textContent).toBe("Retry report"));
+    expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+    reportButton?.click();
+
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(2));
+    expect(reportButton?.textContent).toBe("Reported");
+    expect(document.querySelector(".refine-tooltip")).toBe(card);
   });
 
   it("shows a suggestion card after hovering without taking editor focus", async () => {
@@ -1044,7 +1476,15 @@ describe("Obsidian presentation", () => {
     }
   });
 
-  function createHost(doc: string, sessionId: string, extensions: Extension[] = []): {
+  function createHost(
+    doc: string,
+    sessionId: string,
+    extensions: Extension[] = [],
+    renderExplanation?: (
+      markdown: string,
+      element: HTMLElement,
+    ) => void | (() => void),
+  ): {
     host: ObsidianWritingHost;
     view: EditorView;
   } {
@@ -1054,7 +1494,10 @@ describe("Obsidian presentation", () => {
       parent,
       state: EditorState.create({ doc, extensions }),
     });
-    const host = new ObsidianWritingHost(view, { sessionId });
+    const host = new ObsidianWritingHost(view, {
+      sessionId,
+      ...(renderExplanation === undefined ? {} : { renderExplanation }),
+    });
     hosts.push(host);
     views.push(view);
     return { host, view };
@@ -1081,6 +1524,7 @@ function presentation(revision: string): PresentationSnapshot {
         id: "grammar-1",
         sourceId: "document",
         kind: "grammar",
+        attribution: testAttribution,
         highlightRanges: [
           { location: 8, length: 2 },
           { location: 21, length: 0 },
@@ -1119,6 +1563,7 @@ function spaceOnlyPresentation(
         id: "suggestion-space",
         sourceId: "document",
         kind: "grammar",
+        attribution: testAttribution,
         highlightRanges: [
           { location: 21, length: 1 },
         ],
@@ -1167,6 +1612,7 @@ function appearancePresentation(
         id: "grammar-style",
         sourceId: "document",
         kind: "grammar",
+        attribution: testAttribution,
         highlightRanges: [{ location: 0, length: 2 }],
         diff: [],
         availableActions: [],
@@ -1175,6 +1621,7 @@ function appearancePresentation(
         id: "fluency-style",
         sourceId: "document",
         kind: "fluency",
+        attribution: testAttribution,
         highlightRanges: [{ location: 3, length: 2 }],
         diff: [],
         availableActions: [],
@@ -1183,6 +1630,7 @@ function appearancePresentation(
         id: "mixed-style",
         sourceId: "document",
         kind: "mixed",
+        attribution: testAttribution,
         highlightRanges: [{ location: 6, length: 0 }],
         diff: [],
         availableActions: [],
@@ -1201,6 +1649,7 @@ function overlapPresentation(revision: string): PresentationSnapshot {
     id,
     sourceId: "document" as const,
     kind,
+    attribution: testAttribution,
     highlightRanges: [{ location, length }],
     diff: [{ kind: "unchanged" as const, text: id }],
     availableActions: [] as const,
@@ -1230,6 +1679,7 @@ function splitScopeOverlapPresentation(revision: string): PresentationSnapshot {
         id: "paragraph",
         sourceId: "document",
         kind: "grammar",
+        attribution: testAttribution,
         highlightRanges: [
           { location: 0, length: 1 },
           { location: 2, length: 2 },
@@ -1242,6 +1692,7 @@ function splitScopeOverlapPresentation(revision: string): PresentationSnapshot {
         id: "word",
         sourceId: "document",
         kind: "fluency",
+        attribution: testAttribution,
         highlightRanges: [{ location: 2, length: 3 }],
         diff: [{ kind: "unchanged", text: "word" }],
         availableActions: [],
@@ -1261,6 +1712,7 @@ function sentenceScopedPresentation(revision: string): PresentationSnapshot {
         id: "sentence-correction",
         sourceId: "document",
         kind: "fluency",
+        attribution: testAttribution,
         highlightRanges: [
           { location: 2, length: 6 },
           { location: 24, length: 5 },
@@ -1279,6 +1731,12 @@ function sentenceScopedPresentation(revision: string): PresentationSnapshot {
     ],
   };
 }
+
+const testAttribution = {
+  languageDisplayName: "English (American)",
+  textDirection: "ltr" as const,
+  checkModelDisplayName: "On-Device (Gemma 4 E4B)",
+};
 
 function actions(overrides: Partial<SuggestionActions> = {}): SuggestionActions {
   return {

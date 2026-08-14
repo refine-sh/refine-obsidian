@@ -10,7 +10,7 @@ import type {
 } from "../integration/types";
 
 export const PROTOCOL_MAJOR = 2 as const;
-export const PROTOCOL_MINOR = 0 as const;
+export const PROTOCOL_MINOR = 1 as const;
 
 export interface IntegrationClientIdentity {
   readonly id: string;
@@ -20,7 +20,7 @@ export interface IntegrationClientIdentity {
 
 export interface HelloFrame {
   readonly type: "hello";
-  readonly protocol: { readonly major: 2; readonly minor: 0 };
+  readonly protocol: { readonly major: 2; readonly minor: 1 };
   readonly client: IntegrationClientIdentity;
   readonly runId: string;
   readonly launchToken: string;
@@ -29,7 +29,7 @@ export interface HelloFrame {
 
 export interface WelcomeFrame {
   readonly type: "welcome";
-  readonly protocol: { readonly major: 2; readonly minor: 0 };
+  readonly protocol: { readonly major: 2; readonly minor: 1 };
   readonly serverEpoch: string;
   readonly runResumed: boolean;
   readonly limits: {

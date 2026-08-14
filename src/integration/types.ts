@@ -70,10 +70,17 @@ export const DEFAULT_PRESENTATION_APPEARANCE: PresentationAppearance = {
 
 export type SuggestionActionKind = "apply" | "dismiss" | "explain" | "report";
 
+export interface SuggestionAttribution {
+  readonly languageDisplayName: string;
+  readonly textDirection: "ltr" | "rtl";
+  readonly checkModelDisplayName: string;
+}
+
 export interface PresentedSuggestion {
   readonly id: string;
   readonly sourceId: SourceID;
   readonly kind: "grammar" | "fluency" | "mixed";
+  readonly attribution: SuggestionAttribution;
   readonly highlightRanges: readonly UTF16Range[];
   readonly diff: readonly DiffRun[];
   readonly availableActions: readonly SuggestionActionKind[];
@@ -128,6 +135,14 @@ export type ActionUnavailableReason =
   | "reportingUnavailable";
 
 export type ExplanationUpdate =
+  | {
+      readonly status: "started";
+      readonly attribution: {
+        readonly languageDisplayName: string;
+        readonly textDirection: "ltr" | "rtl";
+        readonly modelDisplayName: string;
+      };
+    }
   | {
       readonly status: "streaming" | "completed";
       readonly text: string;

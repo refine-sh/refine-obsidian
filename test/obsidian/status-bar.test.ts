@@ -308,6 +308,11 @@ function presented(
         id: `suggestion-${index}`,
         sourceId: "document",
         kind: "grammar" as const,
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "ltr" as const,
+          checkModelDisplayName: "On-Device (Gemma)",
+        },
         highlightRanges: [],
         diff: [],
         availableActions: [],

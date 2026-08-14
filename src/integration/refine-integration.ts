@@ -586,69 +586,85 @@ class IntegrationRun {
     return result.promise;
   }
 
-  private async *explain(
+  private explain(
     presentation: PresentationSnapshot,
     suggestionId: string,
-  ): AsyncIterable<ExplanationUpdate> {
-    const suggestion = liveSuggestion(
-      this.currentPresentation,
-      presentation,
-      suggestionId,
-      "explain",
-    );
-    if (!suggestion || !this.session) {
-      yield { status: "stale" };
-      return;
-    }
-    const validation = await this.host.validateRevision(presentation.documentRevision);
-    if (validation.status !== "current") {
-      if (validation.status === "stale") {
-        await this.acceptSnapshot(validation.snapshot);
+  ): AsyncIterableIterator<ExplanationUpdate> {
+    return new ExplanationActionStream(async (stream) => {
+      const suggestion = liveSuggestion(
+        this.currentPresentation,
+        presentation,
+        suggestionId,
+        "explain",
+      );
+      if (!suggestion || !this.session) {
+        stream.finishWith({ status: "stale" });
+        return;
       }
-      yield validation.status === "stale"
-        ? { status: "stale" }
-        : { status: "unavailable", reason: "validationUnavailable" };
-      return;
-    }
-
-    if (
-      !this.session ||
-      !liveSuggestion(this.currentPresentation, presentation, suggestionId, "explain")
-    ) {
-      yield { status: "stale" };
-      return;
-    }
-
-    const id = globalThis.crypto.randomUUID();
-    const queue = new AsyncQueue<ExplanationUpdate>();
-    this.pendingActions.set(id, {
-      id,
-      key: `${presentation.presentationRevision}:${suggestionId}:explain`,
-      kind: "explain",
-      suggestionId,
-      basePresentation: presentation,
-      result: new Deferred<ActionOutcome>(),
-      explanation: queue,
-    });
-    const sent = await this.send({
-      type: "performAction",
-      actionId: id,
-      kind: "explain",
-      suggestion: { id: suggestionId, documentRevision: presentation.documentRevision },
-    });
-    if (!sent) {
-      this.pendingActions.delete(id);
-      yield { status: "unavailable", reason: "disconnected" };
-      return;
-    }
-    try {
-      yield* queue;
-    } finally {
-      if (this.pendingActions.get(id)?.explanation === queue) {
-        this.pendingActions.delete(id);
-        queue.close();
+      const validation = await this.host.validateRevision(
+        presentation.documentRevision,
+      );
+      if (validation.status !== "current") {
+        if (validation.status === "stale") {
+          await this.acceptSnapshot(validation.snapshot);
+        }
+        if (!stream.isCancelled) {
+          stream.finishWith(
+            validation.status === "stale"
+              ? { status: "stale" }
+              : { status: "unavailable", reason: "validationUnavailable" },
+          );
+        }
+        return;
       }
-    }
+
+      if (stream.isCancelled) {
+        return;
+      }
+      if (
+        !this.session ||
+        !liveSuggestion(this.currentPresentation, presentation, suggestionId, "explain")
+      ) {
+        stream.finishWith({ status: "stale" });
+        return;
+      }
+
+      const id = globalThis.crypto.randomUUID();
+      const pending: PendingAction = {
+        id,
+        key: `${presentation.presentationRevision}:${suggestionId}:explain`,
+        kind: "explain",
+        suggestionId,
+        basePresentation: presentation,
+        result: new Deferred<ActionOutcome>(),
+        explanation: stream.queue,
+      };
+      const removePending = (): void => {
+        if (this.pendingActions.get(id)?.explanation === stream.queue) {
+          this.pendingActions.delete(id);
+          this.actionByKey.delete(pending.key);
+        }
+      };
+      this.pendingActions.set(id, pending);
+      stream.setCleanup(removePending);
+      if (stream.isCancelled) {
+        return;
+      }
+
+      const sent = await this.send({
+        type: "performAction",
+        actionId: id,
+        kind: "explain",
+        suggestion: {
+          id: suggestionId,
+          documentRevision: presentation.documentRevision,
+        },
+      });
+      if (!sent && !stream.isCancelled) {
+        removePending();
+        stream.finishWith({ status: "unavailable", reason: "disconnected" });
+      }
+    });
   }
 
   private async disableAction(
@@ -804,6 +820,14 @@ class IntegrationRun {
     this.pendingActions.delete(actionId);
     this.actionByKey.delete(pending.key);
     pending.result.resolve(outcome);
+    if (outcome.status === "stale") {
+      pending.explanation?.push({ status: "stale" });
+    } else if (outcome.status === "unavailable") {
+      pending.explanation?.push({
+        status: "unavailable",
+        reason: outcome.reason,
+      });
+    }
     pending.explanation?.close();
     const currentPresentation = this.currentPresentation;
     if (
@@ -824,6 +848,7 @@ class IntegrationRun {
     }
     const presentationForRestore = this.currentPresentation;
     if (
+      (pending.kind === "apply" || pending.kind === "dismiss") &&
       outcome.status !== "completed" &&
       outcome.status !== "stale" &&
       !(outcome.status === "unavailable" && outcome.reason === "mutationIndeterminate") &&
@@ -1050,6 +1075,104 @@ class IntegrationRun {
           }
         : suggestion;
     });
+  }
+}
+
+class ExplanationActionStream implements AsyncIterableIterator<ExplanationUpdate> {
+  readonly queue = new AsyncQueue<ExplanationUpdate>();
+
+  private readonly cancelled: Promise<IteratorResult<ExplanationUpdate>>;
+  private resolveCancellation!: (
+    result: IteratorResult<ExplanationUpdate>,
+  ) => void;
+  private startPromise: Promise<void> | undefined;
+  private cleanup: (() => void) | undefined;
+  private cancelledLocally = false;
+  private ended = false;
+
+  constructor(
+    private readonly start: (stream: ExplanationActionStream) => Promise<void>,
+  ) {
+    this.cancelled = new Promise((resolve) => {
+      this.resolveCancellation = resolve;
+    });
+  }
+
+  get isCancelled(): boolean {
+    return this.cancelledLocally;
+  }
+
+  next(): Promise<IteratorResult<ExplanationUpdate>> {
+    if (this.ended) {
+      return Promise.resolve({ done: true, value: undefined });
+    }
+    const read = this.ensureStarted().then(() => this.readQueue());
+    return Promise.race([read, this.cancelled]);
+  }
+
+  return(): Promise<IteratorResult<ExplanationUpdate>> {
+    const result: IteratorResult<ExplanationUpdate> = {
+      done: true,
+      value: undefined,
+    };
+    if (!this.ended) {
+      this.cancelledLocally = true;
+      this.ended = true;
+      this.runCleanup();
+      this.queue.close();
+      this.resolveCancellation(result);
+    }
+    return Promise.resolve(result);
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<ExplanationUpdate> {
+    return this;
+  }
+
+  setCleanup(cleanup: () => void): void {
+    if (this.ended) {
+      cleanup();
+      return;
+    }
+    this.cleanup = cleanup;
+  }
+
+  finishWith(update: ExplanationUpdate): void {
+    if (this.ended) {
+      return;
+    }
+    this.queue.push(update);
+    this.queue.close();
+  }
+
+  private ensureStarted(): Promise<void> {
+    if (!this.startPromise) {
+      this.startPromise = this.start(this).catch((error: unknown) => {
+        this.queue.fail(error);
+      });
+    }
+    return this.startPromise;
+  }
+
+  private async readQueue(): Promise<IteratorResult<ExplanationUpdate>> {
+    try {
+      const result = await this.queue.next();
+      if (result.done) {
+        this.ended = true;
+        this.runCleanup();
+      }
+      return result;
+    } catch (error) {
+      this.ended = true;
+      this.runCleanup();
+      throw error;
+    }
+  }
+
+  private runCleanup(): void {
+    const cleanup = this.cleanup;
+    this.cleanup = undefined;
+    cleanup?.();
   }
 }
 

@@ -21,14 +21,22 @@ import type {
   PresentedSuggestion,
   PresentationAppearance,
   PresentationSnapshot,
-  SuggestionActionKind,
   SuggestionActions,
 } from "../integration/types";
+import {
+  disposeSuggestionCard,
+  plainExplanationRenderer,
+  renderSuggestionCard,
+  type ExplanationRenderer,
+} from "./suggestion-card";
+
+export type { ExplanationRenderer } from "./suggestion-card";
 
 interface InstalledPresentation {
   readonly snapshot: PresentationSnapshot;
   readonly actions: SuggestionActions;
   readonly decorations: DecorationSet;
+  readonly renderExplanation: ExplanationRenderer;
 }
 
 interface SuggestionHit {
@@ -45,7 +53,6 @@ interface SuggestionRangeMatch {
 
 const suggestionHoverTimeMs = 200;
 const manualPopoverViewportGutterPx = 16;
-let suggestionCardLabelSequence = 0;
 
 const replacePresentation = StateEffect.define<InstalledPresentation | undefined>();
 
@@ -215,6 +222,7 @@ class PresentationPopover implements PluginValue {
       suggestion,
       presentation.snapshot.appearance,
       presentation.actions,
+      presentation.renderExplanation,
       () => this.closeAndRestoreTrigger(),
     );
     this.element.classList.add("refine-tooltip--manual");
@@ -236,7 +244,10 @@ class PresentationPopover implements PluginValue {
   close(): void {
     this.manualCardResizeObserver?.disconnect();
     this.manualCardResizeObserver = undefined;
-    this.element?.remove();
+    if (this.element) {
+      disposeSuggestionCard(this.element);
+      this.element.remove();
+    }
     this.element = undefined;
     this.manualAnchorX = undefined;
     this.manualAnchorY = undefined;
@@ -475,11 +486,13 @@ const suggestionHover = hoverTooltip(
           match.suggestion,
           presentation.snapshot.appearance,
           presentation.actions,
+          presentation.renderExplanation,
           () => view.dispatch({ effects: closeHoverTooltips }),
         );
         return {
           dom: card,
           mount: () => card.parentElement?.classList.add("refine-tooltip-shell"),
+          destroy: () => disposeSuggestionCard(card),
         };
       },
     };
@@ -506,11 +519,13 @@ export function installPresentation(
   view: EditorView,
   snapshot: PresentationSnapshot,
   actions: SuggestionActions,
+  renderExplanation: ExplanationRenderer = plainExplanationRenderer,
 ): void {
   view.dispatch({
     effects: replacePresentation.of({
       snapshot,
       actions,
+      renderExplanation,
       decorations: buildDecorations(view, snapshot),
     }),
   });
@@ -632,111 +647,8 @@ function suggestionColor(
     : appearance.highlight.fluencyColor;
 }
 
-function renderSuggestionCard(
-  ownerDocument: Document,
-  suggestion: PresentedSuggestion,
-  appearance: PresentationAppearance,
-  actions: SuggestionActions,
-  close: () => void,
-): HTMLElement {
-  const card = ownerDocument.createElement("div");
-  card.className = "refine-tooltip";
-  card.setAttribute("role", "dialog");
-  card.style.setProperty("--no-tooltip", "true");
-  card.style.setProperty("--refine-addition-color", appearance.diff.additionColor);
-  card.style.setProperty("--refine-deletion-color", appearance.diff.deletionColor);
-  const label = ownerDocument.createElement("span");
-  label.id = `refine-tooltip-label-${++suggestionCardLabelSequence}`;
-  label.className = "refine-tooltip__accessible-label";
-  label.textContent = "Refine writing suggestion";
-  card.setAttribute("aria-labelledby", label.id);
-  card.append(label);
-  card.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    close();
-  });
-
-  const diff = ownerDocument.createElement("div");
-  diff.className = "refine-tooltip__diff";
-  for (const run of suggestion.diff) {
-    const part = ownerDocument.createElement("span");
-    part.className = `refine-tooltip__${run.kind}`;
-    part.textContent = run.text;
-    if (run.kind !== "unchanged" && /^ +$/.test(run.text)) {
-      const change = run.kind === "insert" ? "Inserted" : "Deleted";
-      part.classList.add("refine-tooltip__whitespace");
-      part.setAttribute(
-        "aria-label",
-        `${change} ${run.text.length === 1 ? "space" : `${run.text.length} spaces`}`,
-      );
-      if (appearance.diff.showHiddenWhitespace) {
-        part.dataset.refineWhitespaceMarker = "·".repeat(run.text.length);
-      }
-    }
-    diff.append(part);
-  }
-  card.append(diff);
-
-  const explanation = ownerDocument.createElement("div");
-  explanation.className = "refine-tooltip__explanation";
-  card.append(explanation);
-
-  const actionRow = ownerDocument.createElement("div");
-  actionRow.className = "refine-tooltip__actions";
-  for (const action of suggestion.availableActions) {
-    actionRow.append(
-      actionButton(ownerDocument, action, async (button) => {
-        button.disabled = true;
-        if (action === "explain") {
-          for await (const update of actions.explain(suggestion.id)) {
-            if (update.status === "streaming" || update.status === "completed") {
-              explanation.textContent = update.text;
-            } else {
-              explanation.textContent =
-                update.status === "stale" ? "This suggestion is stale." : "Explanation unavailable.";
-            }
-          }
-          button.disabled = false;
-          return;
-        }
-
-        const outcome = await actions[action](suggestion.id);
-        if (outcome.status === "completed") {
-          close();
-        } else {
-          explanation.textContent =
-            outcome.status === "stale" ? "This suggestion is stale." : "Action unavailable.";
-          button.disabled = false;
-        }
-      }),
-    );
-  }
-  card.append(actionRow);
-  return card;
-}
-
 function suggestionTarget(target: EventTarget | null): HTMLElement | undefined {
   const candidate = target as { closest?: (selector: string) => Element | null } | null;
   return (candidate?.closest?.("[data-refine-suggestion-id]") as HTMLElement | null) ??
     undefined;
-}
-
-function actionButton(
-  ownerDocument: Document,
-  action: SuggestionActionKind,
-  run: (button: HTMLButtonElement) => Promise<void>,
-): HTMLButtonElement {
-  const button = ownerDocument.createElement("button");
-  button.type = "button";
-  button.textContent = `${action[0]?.toUpperCase() ?? ""}${action.slice(1)}`;
-  button.addEventListener("click", () => {
-    void run(button).catch(() => {
-      button.disabled = false;
-    });
-  });
-  return button;
 }

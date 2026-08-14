@@ -91,6 +91,45 @@
   white-space: pre-wrap;
 }
 
+.refine-tooltip__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  align-items: baseline;
+}
+
+.refine-tooltip__caption {
+  color: var(--text-muted);
+  font-size: var(--font-smallest);
+}
+
+.refine-tooltip__model {
+  margin-inline-start: auto;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+
+.refine-tooltip__explain {
+  margin-inline-start: auto;
+}
+
+.refine-tooltip__explanation-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding-block-start: var(--size-4-2);
+  border-block-start: 1px solid var(--background-modifier-border);
+}
+
+.refine-tooltip__explanation-section[hidden] {
+  display: none;
+}
+
+.refine-tooltip__status {
+  color: var(--text-muted);
+  font-size: var(--font-smallest);
+}
+
 .refine-tooltip__delete {
   color: var(--refine-deletion-color);
   background: color-mix(in srgb, currentColor 10%, transparent);
@@ -123,6 +162,10 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--size-4-1);
+}
+
+.refine-tooltip__actions button:last-child {
+  margin-inline-start: auto;
 }
 
 .refine-status-bar {

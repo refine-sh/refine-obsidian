@@ -36,7 +36,7 @@ code:
 External editor integrations should reuse the protocol and integration state
 machine. They only replace the host adapter and native presentation.
 
-## V2 behavior
+## V2.1 behavior
 
 - Automatic writing-check scheduling and policy live in the Refine app.
 - **Refine: Check current note** requests an immediate check.
@@ -47,8 +47,11 @@ machine. They only replace the host adapter and native presentation.
 - Grammar and fluency suggestions are shown as native editor decorations.
 - Highlight style, grammar/fluency colors, diff colors, and hidden-whitespace
   markers follow Refine's appearance settings without requiring another check.
-- Apply and Dismiss are implemented. Explain and Report are already represented
-  by the shared interface and become visible only when Refine advertises them.
+- Suggestion cards show the check language and model attribution supplied by
+  Refine. Explain streams Refine's native Markdown explanation and identifies
+  its independently selected model.
+- Report uses Refine's native suggestion-feedback service, keeps the card open,
+  and is shown only while suggestion feedback is enabled in Refine.
 - If Refine restarts, the plugin reconnects and reopens the latest complete
   Markdown snapshot.
 - If an Apply may have reached Obsidian, the plugin never retries the mutation.

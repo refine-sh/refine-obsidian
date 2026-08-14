@@ -1,7 +1,7 @@
 {
   "hello": {
     "type": "hello",
-    "protocol": { "major": 2, "minor": 0 },
+    "protocol": { "major": 2, "minor": 1 },
     "client": {
       "id": "refine-obsidian",
       "version": "0.1.0",
@@ -13,7 +13,7 @@
   },
   "welcome": {
     "type": "welcome",
-    "protocol": { "major": 2, "minor": 0 },
+    "protocol": { "major": 2, "minor": 1 },
     "serverEpoch": "epoch-fixture",
     "runResumed": false,
     "limits": {
@@ -69,6 +69,11 @@
             "id": "suggestion-article",
             "sourceId": "document",
             "kind": "grammar",
+            "attribution": {
+              "languageDisplayName": "English (American)",
+              "textDirection": "ltr",
+              "checkModelDisplayName": "On-Device (Gemma)"
+            },
             "highlightRanges": [
               { "location": 8, "length": 2 }
             ],
@@ -76,12 +81,17 @@
               { "kind": "delete", "text": "an" },
               { "kind": "insert", "text": "a" }
             ],
-            "availableActions": ["apply", "dismiss"]
+            "availableActions": ["apply", "dismiss", "explain", "report"]
           },
           {
             "id": "suggestion-space",
             "sourceId": "document",
             "kind": "grammar",
+            "attribution": {
+              "languageDisplayName": "English (American)",
+              "textDirection": "ltr",
+              "checkModelDisplayName": "On-Device (Gemma)"
+            },
             "highlightRanges": [
               { "location": 21, "length": 1 }
             ],
@@ -90,10 +100,38 @@
               { "kind": "insert", "text": " " },
               { "kind": "unchanged", "text": "or" }
             ],
-            "availableActions": ["apply", "dismiss"]
+            "availableActions": ["apply", "dismiss", "explain", "report"]
           }
         ]
       }
+    }
+  },
+  "explanationStarted": {
+    "type": "event",
+    "sequence": 2,
+    "epoch": "epoch-fixture",
+    "causeCommandId": "command-explain",
+    "event": {
+      "type": "explanationReplaced",
+      "actionId": "action-explain",
+      "update": {
+        "status": "started",
+        "attribution": {
+          "languageDisplayName": "English (American)",
+          "textDirection": "ltr",
+          "modelDisplayName": "OpenRouter (GPT-5.6)"
+        }
+      }
+    }
+  },
+  "reportCompleted": {
+    "type": "event",
+    "sequence": 3,
+    "epoch": "epoch-fixture",
+    "causeCommandId": "command-report",
+    "event": {
+      "type": "actionCompleted",
+      "actionId": "action-report"
     }
   },
   "applyRequested": {

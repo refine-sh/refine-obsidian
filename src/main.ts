@@ -1,4 +1,6 @@
 import {
+  Component,
+  MarkdownRenderer,
   MarkdownView,
   Menu,
   Notice,
@@ -52,8 +54,23 @@ export default class RefinePlugin extends Plugin {
     const integration = createRefineIntegration({ enginePort });
     this.sessions = new ObsidianSessionManager({
       integration,
+      renderExplanation: (markdown, element) => {
+        const component = new Component();
+        component.load();
+        const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+        void MarkdownRenderer.render(
+          this.app,
+          markdown,
+          element,
+          sourcePath,
+          component,
+        ).catch(() => {
+          element.textContent = markdown;
+        });
+        return () => component.unload();
+      },
       onError: (error) => {
-        console.error("Refine integration stopped", error);
+        console.error("Refine integration stopped");
         new Notice(
           error instanceof IncompatibleProtocolError
             ? "Refine and the Obsidian plugin use incompatible protocol versions. Update both and try again."

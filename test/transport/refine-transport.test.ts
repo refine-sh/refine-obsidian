@@ -23,7 +23,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, sent, () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 0 },
+        protocol: { major: 2, minor: 1 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -42,7 +42,7 @@ describe("Refine transport handshake", () => {
     });
     expect(sent[0]).toEqual({
       type: "hello",
-      protocol: { major: 2, minor: 0 },
+      protocol: { major: 2, minor: 1 },
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
       runId: "run-1",
       launchToken: "secret-1",
@@ -131,6 +131,11 @@ describe("Refine transport handshake", () => {
               id: "suggestion-1",
               sourceId: "document",
               kind: "grammar",
+              attribution: {
+                languageDisplayName: "English (American)",
+                textDirection: "ltr",
+                checkModelDisplayName: "On-Device (Gemma)",
+              },
               highlightRanges: [{ location: 7, length: 2 }],
               diff: [
                 { kind: "delete", text: "an" },
@@ -160,7 +165,37 @@ describe("Refine transport handshake", () => {
 
     frames.push({
       type: "event",
-      sequence: 4,
+      sequence: 3,
+      epoch: "epoch-1",
+      event: {
+        type: "explanationReplaced",
+        actionId: "explain-1",
+        update: {
+          status: "started",
+          attribution: {
+            languageDisplayName: "English (American)",
+            textDirection: "ltr",
+            modelDisplayName: "OpenRouter (GPT-5.6)",
+          },
+        },
+      },
+    });
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        sequence: 3,
+        event: {
+          type: "explanationReplaced",
+          update: {
+            status: "started",
+            attribution: { modelDisplayName: "OpenRouter (GPT-5.6)" },
+          },
+        },
+      },
+    });
+
+    frames.push({
+      type: "event",
+      sequence: 5,
       epoch: "epoch-1",
       event: { type: "documentAccepted", revision: "doc:0" },
     });
@@ -175,7 +210,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 0 },
+        protocol: { major: 2, minor: 1 },
         serverEpoch: "epoch-2",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -193,12 +228,12 @@ describe("Refine transport handshake", () => {
     await expect(connection).rejects.toMatchObject({ recoverability: "recoverable" });
   });
 
-  it("reports an incompatible welcome protocol explicitly", async () => {
+  it("reports a protocol 2.0 welcome as explicitly incompatible", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 1, minor: 0 },
+        protocol: { major: 2, minor: 0 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -221,7 +256,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 0 },
+        protocol: { major: 2, minor: 1 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -272,7 +307,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 0 },
+        protocol: { major: 2, minor: 1 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -399,7 +434,7 @@ describe("Refine transport handshake", () => {
             sent.push(value);
             frames.push({
               type: "welcome",
-              protocol: { major: 2, minor: 0 },
+              protocol: { major: 2, minor: 1 },
               serverEpoch: "epoch-1",
               runResumed: false,
               limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -458,7 +493,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 0 },
+        protocol: { major: 2, minor: 1 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },

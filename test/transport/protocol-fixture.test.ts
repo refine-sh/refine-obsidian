@@ -21,6 +21,8 @@ interface ProtocolFixture {
   readonly welcome: WelcomeFrame;
   readonly openDocument: ClientCommandEnvelope;
   readonly presentation: ServerEventEnvelope;
+  readonly explanationStarted: ServerEventEnvelope;
+  readonly reportCompleted: ServerEventEnvelope;
   readonly applyRequested: ServerEventEnvelope;
   readonly completeApply: ClientCommandEnvelope;
 }
@@ -48,6 +50,18 @@ describe("integration protocol V2 golden transcript", () => {
           ],
         },
       },
+    });
+    expect(fixture.explanationStarted).toMatchObject({
+      event: {
+        type: "explanationReplaced",
+        update: {
+          status: "started",
+          attribution: { modelDisplayName: "OpenRouter (GPT-5.6)" },
+        },
+      },
+    });
+    expect(fixture.reportCompleted).toMatchObject({
+      event: { type: "actionCompleted", actionId: "action-report" },
     });
     const frames = new AsyncQueue<unknown>();
     const sent: unknown[] = [];

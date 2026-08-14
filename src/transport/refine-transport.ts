@@ -241,7 +241,7 @@ function decodeWelcome(value: unknown): WelcomeFrame {
   }
   return {
     type: "welcome",
-    protocol: { major: 2, minor: 0 },
+    protocol: { major: 2, minor: 1 },
     serverEpoch: object.serverEpoch,
     runResumed: object.runResumed,
     limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -438,10 +438,34 @@ function decodePresentedSuggestion(
   ) {
     throw new TransportProtocolError("Malformed presented suggestion");
   }
+  const attribution = requireRecord(
+    suggestion.attribution,
+    "suggestion.attribution",
+  );
+  if (
+    !hasExactKeys(attribution, [
+      "languageDisplayName",
+      "textDirection",
+      "checkModelDisplayName",
+    ]) ||
+    typeof attribution.languageDisplayName !== "string" ||
+    attribution.languageDisplayName.length === 0 ||
+    (attribution.textDirection !== "ltr" &&
+      attribution.textDirection !== "rtl") ||
+    typeof attribution.checkModelDisplayName !== "string" ||
+    attribution.checkModelDisplayName.length === 0
+  ) {
+    throw new TransportProtocolError("Malformed suggestion attribution");
+  }
   return {
     id: suggestion.id,
     sourceId: suggestion.sourceId,
     kind: suggestion.kind,
+    attribution: {
+      languageDisplayName: attribution.languageDisplayName,
+      textDirection: attribution.textDirection,
+      checkModelDisplayName: attribution.checkModelDisplayName,
+    },
     highlightRanges: suggestion.highlightRanges.map(decodeRange),
     diff: suggestion.diff.map((run) => {
       const object = requireRecord(run, "diff run");
@@ -501,6 +525,35 @@ function decodeExplanationUpdate(
   value: unknown,
 ): import("../integration/types").ExplanationUpdate {
   const update = requireRecord(value, "explanation update");
+  if (update.status === "started") {
+    const attribution = requireRecord(
+      update.attribution,
+      "explanation attribution",
+    );
+    if (
+      !hasExactKeys(attribution, [
+        "languageDisplayName",
+        "textDirection",
+        "modelDisplayName",
+      ]) ||
+      typeof attribution.languageDisplayName !== "string" ||
+      attribution.languageDisplayName.length === 0 ||
+      (attribution.textDirection !== "ltr" &&
+        attribution.textDirection !== "rtl") ||
+      typeof attribution.modelDisplayName !== "string" ||
+      attribution.modelDisplayName.length === 0
+    ) {
+      throw new TransportProtocolError("Malformed explanation attribution");
+    }
+    return {
+      status: "started",
+      attribution: {
+        languageDisplayName: attribution.languageDisplayName,
+        textDirection: attribution.textDirection,
+        modelDisplayName: attribution.modelDisplayName,
+      },
+    };
+  }
   if (update.status === "streaming" || update.status === "completed") {
     if (typeof update.text !== "string") {
       throw new TransportProtocolError("Explanation text must be a string");

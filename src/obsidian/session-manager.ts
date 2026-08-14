@@ -7,6 +7,7 @@ import type {
 } from "../integration/types";
 import { IncompatibleProtocolError } from "../transport/refine-transport";
 import { ObsidianWritingHost } from "./host";
+import type { ExplanationRenderer } from "./presentation";
 
 export type ObsidianSessionState =
   | { readonly type: "inactive" }
@@ -21,6 +22,7 @@ export interface ObsidianSessionManagerOptions {
   readonly integration: RefineIntegration;
   readonly onError?: (error: unknown) => void;
   readonly onStateChange?: (state: ObsidianSessionState) => void;
+  readonly renderExplanation?: ExplanationRenderer;
 }
 
 interface ActiveSession {
@@ -33,6 +35,7 @@ export class ObsidianSessionManager {
   private readonly integration: RefineIntegration;
   private readonly onError: (error: unknown) => void;
   private readonly onStateChange: (state: ObsidianSessionState) => void;
+  private readonly renderExplanation: ExplanationRenderer | undefined;
   private active: ActiveSession | undefined;
   private disposed = false;
 
@@ -40,6 +43,7 @@ export class ObsidianSessionManager {
     this.integration = options.integration;
     this.onError = options.onError ?? (() => undefined);
     this.onStateChange = options.onStateChange ?? (() => undefined);
+    this.renderExplanation = options.renderExplanation;
     this.onStateChange({ type: "inactive" });
   }
 
@@ -55,6 +59,9 @@ export class ObsidianSessionManager {
     const controller = new AbortController();
     let session: ActiveSession | undefined;
     const host = new ObsidianWritingHost(view, {
+      ...(this.renderExplanation === undefined
+        ? {}
+        : { renderExplanation: this.renderExplanation }),
       onPresentation: (snapshot) => {
         if (session !== undefined && this.active === session) {
           this.onStateChange({ type: "presented", snapshot });
