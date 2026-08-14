@@ -76,7 +76,7 @@ interface HoverBridge {
 
 type SuggestionCardMode = "hover" | "manual";
 
-const suggestionHoverOpenDelayMs = 200;
+const suggestionHoverOpenDelayMs = 100;
 const suggestionHoverCloseDelayMs = 120;
 const suggestionHoverBridgeBufferPx = 6;
 const suggestionCardViewportGutterPx = 16;

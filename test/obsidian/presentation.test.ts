@@ -528,7 +528,7 @@ describe("Obsidian presentation", () => {
 
       movePointer(highlight);
       expect(document.querySelector(".refine-tooltip")).toBeNull();
-      await vi.advanceTimersByTimeAsync(199);
+      await vi.advanceTimersByTimeAsync(99);
       expect(document.querySelector(".refine-tooltip")).toBeNull();
       await vi.advanceTimersByTimeAsync(1);
 
@@ -548,12 +548,12 @@ describe("Obsidian presentation", () => {
       prepareHoverGeometry(view, 9);
 
       movePointer(highlight);
-      await vi.advanceTimersByTimeAsync(150);
+      await vi.advanceTimersByTimeAsync(75);
       movePointer(highlight);
-      await vi.advanceTimersByTimeAsync(150);
+      await vi.advanceTimersByTimeAsync(75);
       expect(document.querySelector(".refine-tooltip")).toBeNull();
 
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(25);
       expect(document.querySelector(".refine-tooltip--hover")).not.toBeNull();
     } finally {
       vi.useRealTimers();
