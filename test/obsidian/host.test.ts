@@ -216,19 +216,23 @@ describe("ObsidianWritingHost", () => {
     host.close();
   });
 
-  it("reuses one editor extension across repeated sessions", () => {
+  it("activates one editor extension per session without leaving it behind", () => {
     const view = createView("draft");
     const initialListenerCount = view.state.facet(EditorView.updateListener).length;
 
     const first = new ObsidianWritingHost(view, { sessionId: "first" });
     const installedListenerCount = view.state.facet(EditorView.updateListener).length;
     first.close();
+    const closedListenerCount = view.state.facet(EditorView.updateListener).length;
     const second = new ObsidianWritingHost(view, { sessionId: "second" });
+    const reinstalledListenerCount = view.state.facet(EditorView.updateListener).length;
 
     expect(installedListenerCount).toBe(initialListenerCount + 1);
-    expect(view.state.facet(EditorView.updateListener)).toHaveLength(installedListenerCount);
+    expect(closedListenerCount).toBe(initialListenerCount);
+    expect(reinstalledListenerCount).toBe(installedListenerCount);
     expect(second.isAttached()).toBe(true);
     second.close();
+    expect(view.state.facet(EditorView.updateListener)).toHaveLength(initialListenerCount);
   });
 
   it("reports a presentation installed for the current document", () => {

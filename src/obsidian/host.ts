@@ -55,6 +55,9 @@ export class ObsidianWritingHost {
     const existing = hostViewBridges.get(view);
     if (existing) {
       this.bridge = existing;
+      this.view.dispatch({
+        effects: existing.extension.reconfigure(this.activeViewExtension(existing)),
+      });
     } else {
       const bridge: HostViewBridge = {
         extension: new Compartment(),
@@ -64,14 +67,7 @@ export class ObsidianWritingHost {
       this.bridge = bridge;
       this.view.dispatch({
         effects: StateEffect.appendConfig.of(
-          bridge.extension.of([
-            refinePresentationExtension,
-            EditorView.updateListener.of((update) => {
-              if (update.docChanged) {
-                bridge.owner?.documentChanged();
-              }
-            }),
-          ]),
+          bridge.extension.of(this.activeViewExtension(bridge)),
         ),
       });
     }
@@ -212,7 +208,19 @@ export class ObsidianWritingHost {
     if (this.bridge.owner === this) {
       clearPresentation(this.view);
       this.bridge.owner = undefined;
+      this.view.dispatch({ effects: this.bridge.extension.reconfigure([]) });
     }
+  }
+
+  private activeViewExtension(bridge: HostViewBridge) {
+    return [
+      refinePresentationExtension(this.view.dom.ownerDocument),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          bridge.owner?.documentChanged();
+        }
+      }),
+    ];
   }
 
   private documentChanged(): void {

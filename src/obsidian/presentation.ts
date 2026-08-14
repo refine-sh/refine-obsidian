@@ -11,6 +11,7 @@ import {
   closeHoverTooltips,
   hoverTooltip,
   type PluginValue,
+  tooltips,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
@@ -43,6 +44,7 @@ interface SuggestionRangeMatch {
 }
 
 const suggestionHoverTimeMs = 200;
+const manualPopoverViewportGutterPx = 16;
 let suggestionCardLabelSequence = 0;
 
 const replacePresentation = StateEffect.define<InstalledPresentation | undefined>();
@@ -99,6 +101,9 @@ class InsertionAnchorWidget extends WidgetType {
 
 class PresentationPopover implements PluginValue {
   private element: HTMLElement | undefined;
+  private manualAnchorX: number | undefined;
+  private manualAnchorY: number | undefined;
+  private manualCardResizeObserver: ResizeObserver | undefined;
   private manualTrigger: HTMLElement | undefined;
   private primaryPointerDownInEditor = false;
   private selectionStartedOnSuggestion = false;
@@ -113,6 +118,10 @@ class PresentationPopover implements PluginValue {
     view.dom.ownerDocument.addEventListener("dragend", this.handleMouseUp, true);
     view.dom.ownerDocument.addEventListener("pointercancel", this.handlePointerCancel, true);
     view.dom.ownerDocument.defaultView?.addEventListener("blur", this.handlePointerCancel);
+    view.dom.ownerDocument.defaultView?.addEventListener(
+      "resize",
+      this.positionManualCard,
+    );
   }
 
   get isHoverSuppressed(): boolean {
@@ -161,6 +170,10 @@ class PresentationPopover implements PluginValue {
       "blur",
       this.handlePointerCancel,
     );
+    this.view.dom.ownerDocument.defaultView?.removeEventListener(
+      "resize",
+      this.positionManualCard,
+    );
     this.primaryPointerDownInEditor = false;
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = false;
@@ -194,6 +207,8 @@ class PresentationPopover implements PluginValue {
     }
 
     this.close();
+    this.manualAnchorX = anchorX;
+    this.manualAnchorY = anchorY;
     this.manualTrigger = trigger;
     this.element = renderSuggestionCard(
       this.view.dom.ownerDocument,
@@ -205,13 +220,26 @@ class PresentationPopover implements PluginValue {
     this.element.classList.add("refine-tooltip--manual");
     this.element.style.left = `${anchorX}px`;
     this.element.style.top = `${anchorY + 4}px`;
-    this.view.dom.ownerDocument.body.append(this.element);
+    const ownerDocument = this.view.dom.ownerDocument;
+    ownerDocument.body.append(this.element);
+    this.positionManualCard();
+    const ResizeObserverConstructor = ownerDocument.defaultView?.ResizeObserver;
+    if (ResizeObserverConstructor) {
+      this.manualCardResizeObserver = new ResizeObserverConstructor(() =>
+        this.positionManualCard(),
+      );
+      this.manualCardResizeObserver.observe(this.element);
+    }
     this.element.querySelector<HTMLElement>("button")?.focus();
   }
 
   close(): void {
+    this.manualCardResizeObserver?.disconnect();
+    this.manualCardResizeObserver = undefined;
     this.element?.remove();
     this.element = undefined;
+    this.manualAnchorX = undefined;
+    this.manualAnchorY = undefined;
     this.manualTrigger = undefined;
   }
 
@@ -222,6 +250,42 @@ class PresentationPopover implements PluginValue {
       trigger.focus();
     }
   }
+
+  private readonly positionManualCard = (): void => {
+    if (
+      !this.element ||
+      this.manualAnchorX === undefined ||
+      this.manualAnchorY === undefined
+    ) {
+      return;
+    }
+
+    const ownerDocument = this.view.dom.ownerDocument;
+    const viewportWidth =
+      ownerDocument.documentElement.clientWidth ||
+      ownerDocument.defaultView?.innerWidth ||
+      0;
+    if (viewportWidth <= 0) {
+      return;
+    }
+
+    const triggerBounds = this.manualTrigger?.isConnected
+      ? this.manualTrigger.getBoundingClientRect()
+      : undefined;
+    const anchorX = triggerBounds?.left ?? this.manualAnchorX;
+    const anchorY = triggerBounds?.bottom ?? this.manualAnchorY;
+    const cardWidth = this.element.getBoundingClientRect().width;
+    const maximumLeft = Math.max(
+      manualPopoverViewportGutterPx,
+      viewportWidth - manualPopoverViewportGutterPx - cardWidth,
+    );
+    const clampedLeft = Math.min(
+      Math.max(anchorX, manualPopoverViewportGutterPx),
+      maximumLeft,
+    );
+    this.element.style.left = `${clampedLeft}px`;
+    this.element.style.top = `${anchorY + 4}px`;
+  };
 
   private readonly handleMouseDown = (event: MouseEvent): void => {
     this.primaryPointerDownInEditor = event.button === 0;
@@ -429,11 +493,14 @@ const suggestionHover = hoverTooltip(
   },
 );
 
-export const refinePresentationExtension: Extension = [
-  presentationField,
-  suggestionHover,
-  presentationPopover,
-];
+export function refinePresentationExtension(ownerDocument: Document): Extension {
+  return [
+    presentationField,
+    tooltips({ parent: ownerDocument.body }),
+    suggestionHover,
+    presentationPopover,
+  ];
+}
 
 export function installPresentation(
   view: EditorView,
@@ -539,8 +606,11 @@ function buildDecorations(
               "aria-label": "Refine writing suggestion",
               "data-refine-suggestion-id": suggestion.id,
               role: "button",
-              style:
-                `--no-tooltip: true; --refine-suggestion-color: ${color}`,
+              style: [
+                "--no-tooltip: true",
+                `--refine-suggestion-color: ${color}`,
+                `text-decoration-color: ${color} !important`,
+              ].join("; "),
               tabindex: "0",
             },
             class: `refine-suggestion refine-suggestion--${style}`,

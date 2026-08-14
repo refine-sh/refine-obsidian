@@ -194,6 +194,62 @@ describe("Obsidian presentation", () => {
     }
   });
 
+  it("gives hover cards a readable responsive width and wraps long content", async () => {
+    vi.useFakeTimers();
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    try {
+      const { host, view } = createHost("[create an link](URL)or", "responsive-card");
+      view.dom.parentElement?.classList.add("view-content");
+      view.dom.parentElement?.style.setProperty("overflow", "hidden");
+      const snapshot = presentation("responsive-card:0");
+      const longToken = "unbroken".repeat(40);
+      await host.present(
+        {
+          ...snapshot,
+          suggestions: snapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            diff: [{ kind: "insert" as const, text: longToken }],
+          })),
+        },
+        actions(),
+      );
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+
+      await hover(view, highlight, 9);
+
+      const card = document.querySelector<HTMLElement>(".refine-tooltip");
+      const shell = card?.parentElement;
+      const diff = document.querySelector<HTMLElement>(".refine-tooltip__diff");
+      const cardStyle = getComputedStyle(card!);
+      const tooltipRule = Array.from(style.sheet?.cssRules ?? []).find(
+        (rule) =>
+          "selectorText" in rule &&
+          (rule as CSSStyleRule).selectorText === ".refine-tooltip",
+      ) as CSSStyleRule | undefined;
+      expect(cardStyle.boxSizing).toBe("border-box");
+      expect(cardStyle.inlineSize).toBe("max-content");
+      expect(cardStyle.minInlineSize).toBe("320px");
+      expect(cardStyle.maxInlineSize).toBe("448px");
+      expect(view.dom.parentElement?.style.overflow).toBe("hidden");
+      expect(shell?.closest(".cm-editor")).toBeNull();
+      expect(shell?.parentElement?.parentElement).toBe(document.body);
+      expect(tooltipRule?.style.minInlineSize).toMatch(/min\(20rem,.*100vw/);
+      expect(tooltipRule?.style.minInlineSize).toContain("-2rem");
+      expect(tooltipRule?.style.maxInlineSize).toMatch(/min\(28rem,.*100vw/);
+      expect(tooltipRule?.style.maxInlineSize).toContain("-2rem");
+      expect(diff?.textContent).toBe(longToken);
+      expect(getComputedStyle(diff!).overflowWrap).toBe("anywhere");
+    } finally {
+      style.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["underline", "dashedUnderline", "highlight"] as const)(
     "renders %s highlights and insertion anchors with kind colors",
     async (style) => {
@@ -217,6 +273,160 @@ describe("Obsidian presentation", () => {
       expect(mixed?.style.getPropertyValue("--refine-suggestion-color")).toBe("#DDEEFF");
     },
   );
+
+  it.each([
+    ["underline", "solid"],
+    ["dashedUnderline", "dashed"],
+  ] as const)(
+    "keeps the Refine %s color and style when Live Preview owns the text color",
+    async (highlightStyle, decorationStyle) => {
+      const style = document.createElement("style");
+      style.textContent = `${readFileSync(
+        resolve(import.meta.dirname, "../../styles.css"),
+        "utf8",
+      )}
+        .cm-editor .cm-content .cm-underline {
+          color: rgb(118, 74, 188);
+          text-decoration-line: underline;
+          text-decoration-color: currentColor;
+          text-decoration-style: solid;
+        }
+      `;
+      document.head.append(style);
+      try {
+        const livePreviewLink = Decoration.mark({ class: "cm-underline" }).range(0, 6);
+        const { host } = createHost("abcdef", "live-preview-underline-color", [
+          EditorView.decorations.of(Decoration.set([livePreviewLink])),
+        ]);
+        await host.present(
+          appearancePresentation("live-preview-underline-color:0", highlightStyle),
+          actions(),
+        );
+        const grammar = document.querySelector<HTMLElement>(
+          '[data-refine-suggestion-id="grammar-style"]',
+        );
+        const livePreviewText = grammar?.querySelector<HTMLElement>(".cm-underline");
+
+        const livePreviewComputed = getComputedStyle(livePreviewText!);
+        const refineComputed = getComputedStyle(grammar!);
+        expect(livePreviewComputed.color).toBe("rgb(118, 74, 188)");
+        expect(livePreviewComputed.textDecorationLine).toBe("none");
+        // The custom property remains available to highlight mode while the
+        // inline longhand makes the underline authoritative over host and theme CSS.
+        expect(refineComputed.getPropertyValue("--refine-suggestion-color")).toBe("#AABBCC");
+        expect(refineComputed.textDecorationColor).toBe("rgb(170, 187, 204)");
+        expect(refineComputed.textDecorationStyle).toBe(decorationStyle);
+      } finally {
+        style.remove();
+      }
+    },
+  );
+
+  it("keeps the Refine underline color authoritative on plain editor text", async () => {
+    const style = document.createElement("style");
+    style.textContent = `${readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    )}
+      .cm-editor .cm-content .refine-suggestion {
+        color: rgb(42, 42, 42);
+        text-decoration-color: currentColor;
+      }
+    `;
+    document.head.append(style);
+    try {
+      const { host } = createHost("abcdef", "plain-underline-color");
+      await host.present(
+        appearancePresentation("plain-underline-color:0", "underline"),
+        actions(),
+      );
+      const grammar = document.querySelector<HTMLElement>(
+        '[data-refine-suggestion-id="grammar-style"]',
+      );
+      const computed = getComputedStyle(grammar!);
+
+      expect(computed.color).toBe("rgb(42, 42, 42)");
+      expect(computed.getPropertyValue("--refine-suggestion-color")).toBe("#AABBCC");
+      expect(computed.textDecorationColor).toBe("rgb(170, 187, 204)");
+    } finally {
+      style.remove();
+    }
+  });
+
+  it("suppresses native spellcheck paint without disabling spellcheck", async () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    const { host, view } = createHost("abcdef", "spellcheck-underline");
+    try {
+      view.contentDOM.spellcheck = true;
+      await host.present(
+        appearancePresentation("spellcheck-underline:0", "underline"),
+        actions(),
+      );
+      const grammar = document.querySelector<HTMLElement>(
+        '[data-refine-suggestion-id="grammar-style"]',
+      );
+      const spellingRule = Array.from(style.sheet?.cssRules ?? []).find(
+        (rule) =>
+          "selectorText" in rule &&
+          (rule as CSSStyleRule).selectorText.includes("::spelling-error"),
+      ) as CSSStyleRule | undefined;
+
+      expect(view.contentDOM.spellcheck).toBe(true);
+      expect(grammar?.getAttribute("spellcheck")).toBeNull();
+      expect(spellingRule?.selectorText).toContain(
+        ":is(.refine-suggestion, .refine-suggestion *)::spelling-error",
+      );
+      expect(spellingRule?.selectorText).toContain(
+        ":is(.refine-suggestion, .refine-suggestion *)::grammar-error",
+      );
+      expect(spellingRule?.style.textDecorationLine).toBe("none");
+    } finally {
+      style.remove();
+    }
+  });
+
+  it("preserves Live Preview's link underline when Refine uses highlight style", async () => {
+    const style = document.createElement("style");
+    style.textContent = `${readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    )}
+      .cm-editor .cm-content .cm-underline {
+        color: rgb(118, 74, 188);
+        text-decoration-line: underline;
+        text-decoration-color: currentColor;
+        text-decoration-style: solid;
+      }
+    `;
+    document.head.append(style);
+    try {
+      const livePreviewLink = Decoration.mark({ class: "cm-underline" }).range(0, 6);
+      const { host } = createHost("abcdef", "live-preview-highlight", [
+        EditorView.decorations.of(Decoration.set([livePreviewLink])),
+      ]);
+      await host.present(
+        appearancePresentation("live-preview-highlight:0", "highlight"),
+        actions(),
+      );
+      const grammar = document.querySelector<HTMLElement>(
+        '[data-refine-suggestion-id="grammar-style"]',
+      );
+      const livePreviewText = grammar?.querySelector<HTMLElement>(".cm-underline");
+      const computed = getComputedStyle(livePreviewText!);
+
+      expect(grammar?.classList.contains("refine-suggestion--highlight")).toBe(true);
+      expect(computed.color).toBe("rgb(118, 74, 188)");
+      expect(computed.textDecorationLine).toBe("underline");
+      expect(computed.textDecorationColor).toBe("rgb(118, 74, 188)");
+    } finally {
+      style.remove();
+    }
+  });
 
   it("chooses overlapping hover content by fragment length, grammar kind, then stable ID", async () => {
     const { host, view } = createHost("abcdef", "overlap");
@@ -724,6 +934,72 @@ describe("Obsidian presentation", () => {
     expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe(
       "an",
     );
+  });
+
+  it("clamps a keyboard-opened card inside the viewport gutter", async () => {
+    let viewportWidth = 960;
+    let cardWidth = 320;
+    let resizeObserverCallback: ResizeObserverCallback | undefined;
+    const previousResizeObserver = Object.getOwnPropertyDescriptor(window, "ResizeObserver");
+    class TestResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeObserverCallback = callback;
+      }
+
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    Object.defineProperty(window, "ResizeObserver", {
+      configurable: true,
+      value: TestResizeObserver,
+    });
+    vi.spyOn(document.documentElement, "clientWidth", "get").mockImplementation(
+      () => viewportWidth,
+    );
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("refine-suggestion")) {
+        return new DOMRect(920, 100, 40, 20);
+      }
+      if (this.classList.contains("refine-tooltip--manual")) {
+        return new DOMRect(
+          Number.parseFloat(this.style.left) || 0,
+          Number.parseFloat(this.style.top) || 0,
+          cardWidth,
+          200,
+        );
+      }
+      return originalBounds.call(this);
+    });
+    try {
+      const { host } = createHost("[create an link](URL)or", "keyboard-right-edge");
+      await host.present(presentation("keyboard-right-edge:0"), actions());
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+
+      highlight?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--manual");
+      expect(card?.style.left).toBe("624px");
+      expect(card?.style.top).toBe("124px");
+
+      cardWidth = 448;
+      resizeObserverCallback?.([], {} as ResizeObserver);
+      expect(card?.style.left).toBe("496px");
+
+      cardWidth = 320;
+      viewportWidth = 400;
+      window.dispatchEvent(new Event("resize"));
+      expect(card?.style.left).toBe("64px");
+    } finally {
+      if (previousResizeObserver) {
+        Object.defineProperty(window, "ResizeObserver", previousResizeObserver);
+      } else {
+        Reflect.deleteProperty(window, "ResizeObserver");
+      }
+    }
   });
 
   it("dismisses a keyboard-opened card with Escape and restores its trigger", async () => {

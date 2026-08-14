@@ -1,16 +1,26 @@
 .refine-suggestion {
   text-decoration-line: underline;
-  text-decoration-color: var(--refine-suggestion-color);
+  text-decoration-color: var(--refine-suggestion-color) !important;
   text-decoration-thickness: 1.5px;
   text-underline-offset: 3px;
 }
 
 .refine-suggestion--underline {
-  text-decoration-style: solid;
+  text-decoration-style: solid !important;
 }
 
 .refine-suggestion--dashedUnderline {
-  text-decoration-style: dashed;
+  text-decoration-style: dashed !important;
+}
+
+.cm-editor .cm-content .refine-suggestion--underline .cm-underline,
+.cm-editor .cm-content .refine-suggestion--dashedUnderline .cm-underline {
+  text-decoration-line: none !important;
+}
+
+:is(.refine-suggestion, .refine-suggestion *)::spelling-error,
+:is(.refine-suggestion, .refine-suggestion *)::grammar-error {
+  text-decoration-line: none !important;
 }
 
 .refine-suggestion--highlight {
@@ -37,10 +47,13 @@
 }
 
 .refine-tooltip {
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: var(--size-4-2);
-  max-width: 28rem;
+  inline-size: max-content;
+  min-inline-size: min(20rem, calc(100vw - 2rem));
+  max-inline-size: min(28rem, calc(100vw - 2rem));
   padding: var(--size-4-3);
   color: var(--text-normal);
   background: var(--background-primary);
@@ -49,7 +62,7 @@
   box-shadow: var(--shadow-s);
 }
 
-.cm-editor .cm-tooltip.refine-tooltip-shell:has(> .refine-tooltip:only-child) {
+.cm-tooltip.refine-tooltip-shell:has(> .refine-tooltip:only-child) {
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -74,6 +87,7 @@
 
 .refine-tooltip__diff,
 .refine-tooltip__explanation {
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
