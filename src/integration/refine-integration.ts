@@ -70,11 +70,69 @@ interface HostObservationCycle {
   readonly detach: () => void;
 }
 
+interface CheckPresentationLifecycle {
+  readonly documentRevision: string;
+  checkingStarted: boolean;
+  completed: boolean;
+  closed: boolean;
+  originCauseCommandId: string | undefined;
+  progress?: {
+    readonly completedUnitCount: number;
+    readonly totalUnitCount: number;
+  };
+}
+
+interface PresentationReplayAlias {
+  readonly causeCommandId: string;
+  readonly documentRevision: string;
+  readonly checkId: string;
+}
+
+interface CheckIdAlias {
+  readonly documentRevision: string;
+  readonly canonicalCheckId: string;
+  readonly bindsActiveCheckLifecycle: boolean;
+}
+
+interface ActionPresentationAlias extends CheckIdAlias {
+  readonly actionId: string;
+}
+
+interface ResumableCheckLifecycle {
+  readonly checkId: string;
+  readonly terminalOwnerCheckId: string;
+}
+
+const MAX_BUFFERED_ENGINE_EVENTS = 128;
+
 class IntegrationRun {
   private readonly runId = globalThis.crypto.randomUUID();
   private readonly lifecycle = new AbortController();
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly actionByKey = new Map<string, Promise<ActionOutcome>>();
+  private readonly checkPresentationLifecycles = new Map<
+    string,
+    CheckPresentationLifecycle
+  >();
+  private readonly currentCheckIdByRevision = new Map<string, string>();
+  private readonly activeCheckingCheckIdByRevision = new Map<string, string>();
+  private readonly checkIdAliases = new Map<string, CheckIdAlias>();
+  private readonly actionPresentationAliasesByCommandId = new Map<
+    string,
+    ActionPresentationAlias
+  >();
+  private readonly actionAliasCommandIdByActionId = new Map<string, string>();
+  private readonly resumableCheckByRevision = new Map<
+    string,
+    ResumableCheckLifecycle
+  >();
+  private presentationReplayAlias: PresentationReplayAlias | undefined;
+  private presentationValidationCache:
+    | {
+        readonly documentRevision: string;
+        readonly boundariesBySource: Map<string, Set<number>>;
+      }
+    | undefined;
   private readonly transactionReceipts = new Map<string, HostApplyOutcome>();
   private readonly transactionByAction = new Map<string, string>();
   private readonly retiredRevisions = new Set<string>();
@@ -85,6 +143,7 @@ class IntegrationRun {
         revision: string;
         intent?: CheckIntent;
         commandId?: string;
+        checkId?: string;
       }
     | undefined;
   private currentPresentation: PresentationSnapshot | undefined;
@@ -153,6 +212,18 @@ class IntegrationRun {
             (this.serverEpoch !== connected.serverEpoch || !connected.runResumed)
           ) {
             await this.abandonUnacknowledgedReceipts();
+            this.checkPresentationLifecycles.clear();
+            this.currentCheckIdByRevision.clear();
+            this.activeCheckingCheckIdByRevision.clear();
+            this.resumableCheckByRevision.clear();
+            this.checkIdAliases.clear();
+            this.actionPresentationAliasesByCommandId.clear();
+            this.actionAliasCommandIdByActionId.clear();
+            this.presentationReplayAlias = undefined;
+            this.currentCheckId = undefined;
+            if (this.pendingCheck) {
+              delete this.pendingCheck.checkId;
+            }
           }
           this.serverEpoch = connected.serverEpoch;
           this.session = connected;
@@ -279,20 +350,34 @@ class IntegrationRun {
   }
 
   private async pumpEvents(session: RefineTransportSession): Promise<void> {
-    const iterator = session.events(this.lifecycle.signal)[Symbol.asyncIterator]();
+    const readerController = new AbortController();
+    const iterator = session.events(readerController.signal)[Symbol.asyncIterator]();
+    const bufferedEvents = new AsyncQueue<ServerEventEnvelope>(
+      MAX_BUFFERED_ENGINE_EVENTS,
+      coalesceQueuedPresentation,
+    );
+    void this.readEngineEvents(
+      iterator,
+      bufferedEvents,
+      readerController.signal,
+    );
     let stop: (() => void) | undefined;
     const aborted = new Promise<void>((resolve) => {
       stop = resolve;
     });
-    const abort = (): void => stop?.();
+    const abort = (): void => {
+      readerController.abort(this.lifecycle.signal.reason);
+      stop?.();
+    };
     if (this.lifecycle.signal.aborted) {
+      abort();
       return;
     }
     this.lifecycle.signal.addEventListener("abort", abort, { once: true });
     try {
       while (!this.lifecycle.signal.aborted) {
         const next = await Promise.race([
-          iterator.next().then((result) => ({ type: "event" as const, result })),
+          bufferedEvents.next().then((result) => ({ type: "event" as const, result })),
           aborted.then(() => ({ type: "aborted" as const })),
         ]);
         if (
@@ -306,8 +391,445 @@ class IntegrationRun {
       }
     } finally {
       this.lifecycle.signal.removeEventListener("abort", abort);
-      await iterator.return?.().catch(() => undefined);
+      readerController.abort(this.lifecycle.signal.reason);
+      bufferedEvents.close();
+      // Some event sources cannot finish `return()` until an outstanding
+      // `next()` settles. Session closure wakes them after this pump returns.
+      void iterator.return?.().catch(() => undefined);
     }
+  }
+
+  private async readEngineEvents(
+    iterator: AsyncIterator<ServerEventEnvelope>,
+    bufferedEvents: AsyncQueue<ServerEventEnvelope>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      while (!signal.aborted) {
+        const next = await iterator.next();
+        if (next.done) {
+          return;
+        }
+        const envelope = this.canonicalizePresentationCheckIdentity(
+          next.value,
+        );
+        if (!this.validatePresentationLifecycle(envelope)) {
+          continue;
+        }
+        // Overflow closes the queue and the connection is abandoned. Events
+        // that can mutate state are never dropped to make room.
+        bufferedEvents.push(envelope);
+      }
+    } catch (error) {
+      bufferedEvents.fail(error);
+    } finally {
+      bufferedEvents.close();
+    }
+  }
+
+  private canonicalizePresentationCheckIdentity(
+    envelope: ServerEventEnvelope,
+  ): ServerEventEnvelope {
+    const event = envelope.event;
+    if (event.type !== "presentationContentReplaced") {
+      return envelope;
+    }
+
+    const replayAlias = this.presentationReplayAlias;
+    const isReconnectReplay =
+      replayAlias !== undefined &&
+      envelope.causeCommandId === replayAlias.causeCommandId;
+    if (isReconnectReplay) {
+      this.presentationReplayAlias = undefined;
+    }
+
+    if (isReconnectReplay && replayAlias) {
+      const replayBindsActiveCheck =
+        event.content.documentRevision === replayAlias.documentRevision &&
+        this.isLiveOrResumableCheck(
+          replayAlias.documentRevision,
+          replayAlias.checkId,
+        );
+      if (replayBindsActiveCheck && event.content.status === "checking") {
+        if (event.checkId !== replayAlias.checkId) {
+          this.checkIdAliases.set(event.checkId, {
+            documentRevision: replayAlias.documentRevision,
+            canonicalCheckId: replayAlias.checkId,
+            bindsActiveCheckLifecycle: true,
+          });
+        }
+        return this.rewritePresentationCheckId(
+          envelope,
+          replayAlias.checkId,
+        );
+      }
+      if (
+        replayBindsActiveCheck &&
+        event.content.status === "complete"
+      ) {
+        if (event.checkId !== replayAlias.checkId) {
+          this.checkIdAliases.set(event.checkId, {
+            documentRevision: replayAlias.documentRevision,
+            canonicalCheckId: replayAlias.checkId,
+            bindsActiveCheckLifecycle: true,
+          });
+        }
+        return this.preserveResumableCheckAcrossTerminal(
+          envelope,
+          replayAlias.checkId,
+        );
+      }
+      if (replayBindsActiveCheck && event.content.status === "unavailable") {
+        if (event.checkId !== replayAlias.checkId) {
+          this.checkIdAliases.set(event.checkId, {
+            documentRevision: replayAlias.documentRevision,
+            canonicalCheckId: replayAlias.checkId,
+            bindsActiveCheckLifecycle: true,
+          });
+        }
+        return this.rewritePresentationCheckId(
+          envelope,
+          replayAlias.checkId,
+        );
+      }
+      // A pending replay represents a newly scheduled check, while a replay
+      // that no longer matches the retained lifecycle must establish its own
+      // identity. Consume the one-shot reconnect alias without rewriting it.
+      if (
+        event.content.status === "pending" ||
+        event.content.status === "unavailable"
+      ) {
+        this.clearResumableCheck(event.content.documentRevision);
+      }
+      return envelope;
+    }
+
+    const actionAlias =
+      envelope.causeCommandId === undefined
+        ? undefined
+        : this.actionPresentationAliasesByCommandId.get(
+            envelope.causeCommandId,
+          );
+    if (
+      actionAlias?.documentRevision === event.content.documentRevision
+    ) {
+      if (event.content.status === "pending") {
+        this.clearResumableCheck(event.content.documentRevision);
+        return envelope;
+      }
+      if (event.checkId !== actionAlias.canonicalCheckId) {
+        this.checkIdAliases.set(event.checkId, {
+          documentRevision: actionAlias.documentRevision,
+          canonicalCheckId: actionAlias.canonicalCheckId,
+          bindsActiveCheckLifecycle:
+            actionAlias.bindsActiveCheckLifecycle,
+        });
+      }
+      if (
+        actionAlias.bindsActiveCheckLifecycle &&
+        event.content.status === "complete" &&
+        this.isLiveOrResumableCheck(
+          event.content.documentRevision,
+          actionAlias.canonicalCheckId,
+        )
+      ) {
+        return this.preserveResumableCheckAcrossTerminal(
+          envelope,
+          actionAlias.canonicalCheckId,
+        );
+      }
+      return this.rewritePresentationCheckId(
+        envelope,
+        actionAlias.canonicalCheckId,
+      );
+    }
+
+    const knownAlias = this.checkIdAliases.get(event.checkId);
+    if (
+      knownAlias?.documentRevision === event.content.documentRevision
+    ) {
+      if (
+        knownAlias.bindsActiveCheckLifecycle &&
+        event.content.status === "complete" &&
+        this.isLiveOrResumableCheck(
+          event.content.documentRevision,
+          knownAlias.canonicalCheckId,
+        )
+      ) {
+        return this.preserveResumableCheckAcrossTerminal(
+          envelope,
+          knownAlias.canonicalCheckId,
+        );
+      }
+      if (event.content.status === "pending") {
+        this.clearResumableCheck(event.content.documentRevision);
+        return envelope;
+      }
+      return this.rewritePresentationCheckId(
+        envelope,
+        knownAlias.canonicalCheckId,
+      );
+    }
+
+    const lifecycle = this.checkPresentationLifecycles.get(event.checkId);
+    const currentCheckId = this.currentCheckIdByRevision.get(
+      event.content.documentRevision,
+    );
+    const resumable = this.resumableCheckByRevision.get(
+      event.content.documentRevision,
+    );
+    const isCurrentOrResumableCheck =
+      currentCheckId === event.checkId ||
+      (resumable?.checkId === event.checkId &&
+        resumable.terminalOwnerCheckId === currentCheckId);
+    const isRematerializationOfActiveCheck =
+      event.content.status === "complete" &&
+      isCurrentOrResumableCheck &&
+      this.activeCheckingCheckIdByRevision.get(
+        event.content.documentRevision,
+      ) === event.checkId &&
+      lifecycle?.originCauseCommandId !== undefined &&
+      envelope.causeCommandId !== lifecycle.originCauseCommandId;
+    return isRematerializationOfActiveCheck
+      ? this.preserveResumableCheckAcrossTerminal(envelope, event.checkId)
+      : this.clearResumableForAuthoritativePresentation(envelope);
+  }
+
+  private rewritePresentationCheckId(
+    envelope: ServerEventEnvelope,
+    canonicalCheckId: string,
+  ): ServerEventEnvelope {
+    const event = envelope.event;
+    if (event.type !== "presentationContentReplaced") {
+      return envelope;
+    }
+    return {
+      ...envelope,
+      event: { ...event, checkId: canonicalCheckId },
+    };
+  }
+
+  private preserveResumableCheckAcrossTerminal(
+    envelope: ServerEventEnvelope,
+    resumableCheckId: string,
+  ): ServerEventEnvelope {
+    const event = envelope.event;
+    if (event.type !== "presentationContentReplaced") {
+      return envelope;
+    }
+    const terminalOwnerCheckId =
+      event.checkId === resumableCheckId
+        ? `rematerialized-${globalThis.crypto.randomUUID()}`
+        : event.checkId;
+    this.resumableCheckByRevision.set(event.content.documentRevision, {
+      checkId: resumableCheckId,
+      terminalOwnerCheckId,
+    });
+    return this.rewritePresentationCheckId(
+      envelope,
+      terminalOwnerCheckId,
+    );
+  }
+
+  private clearResumableForAuthoritativePresentation(
+    envelope: ServerEventEnvelope,
+  ): ServerEventEnvelope {
+    const event = envelope.event;
+    if (
+      event.type === "presentationContentReplaced" &&
+      event.content.status === "pending"
+    ) {
+      this.clearResumableCheck(event.content.documentRevision);
+    } else if (
+      event.type === "presentationContentReplaced" &&
+      event.content.status === "unavailable"
+    ) {
+      const resumable = this.resumableCheckByRevision.get(
+        event.content.documentRevision,
+      );
+      if (resumable?.checkId !== event.checkId) {
+        this.clearResumableCheck(event.content.documentRevision);
+      }
+    }
+    return envelope;
+  }
+
+  private isLiveOrResumableCheck(
+    documentRevision: string,
+    checkId: string,
+  ): boolean {
+    if (
+      this.activeCheckingCheckIdByRevision.get(documentRevision) !== checkId
+    ) {
+      return false;
+    }
+    const currentCheckId = this.currentCheckIdByRevision.get(documentRevision);
+    if (currentCheckId === checkId) {
+      return true;
+    }
+    const resumable = this.resumableCheckByRevision.get(documentRevision);
+    return (
+      resumable?.checkId === checkId &&
+      resumable.terminalOwnerCheckId === currentCheckId
+    );
+  }
+
+  private clearResumableCheck(documentRevision: string): void {
+    const resumable = this.resumableCheckByRevision.get(documentRevision);
+    if (!resumable) {
+      return;
+    }
+    this.resumableCheckByRevision.delete(documentRevision);
+    if (
+      this.activeCheckingCheckIdByRevision.get(documentRevision) ===
+      resumable.checkId
+    ) {
+      this.activeCheckingCheckIdByRevision.delete(documentRevision);
+    }
+  }
+
+  private validatePresentationLifecycle(envelope: ServerEventEnvelope): boolean {
+    const event = envelope.event;
+    if (event.type !== "presentationContentReplaced") {
+      return true;
+    }
+
+    const { content } = event;
+    validateCheckingProgress(content);
+    const previousCurrentCheckId = this.currentCheckIdByRevision.get(
+      content.documentRevision,
+    );
+    let lifecycle = this.checkPresentationLifecycles.get(event.checkId);
+    const lifecycleWasKnown = lifecycle !== undefined;
+    if (!lifecycle) {
+      lifecycle = {
+        documentRevision: content.documentRevision,
+        checkingStarted: false,
+        completed: false,
+        closed: false,
+        originCauseCommandId: undefined,
+      };
+      this.checkPresentationLifecycles.set(event.checkId, lifecycle);
+    } else if (lifecycle.documentRevision !== content.documentRevision) {
+      throw new FatalEngineError(
+        "Refine reused a check ID for a different document revision",
+      );
+    }
+
+    if (previousCurrentCheckId === undefined) {
+      this.currentCheckIdByRevision.set(
+        content.documentRevision,
+        event.checkId,
+      );
+    } else if (previousCurrentCheckId !== event.checkId) {
+      const resumable = this.resumableCheckByRevision.get(
+        content.documentRevision,
+      );
+      if (
+        lifecycleWasKnown &&
+        resumable?.checkId === event.checkId &&
+        resumable.terminalOwnerCheckId === previousCurrentCheckId
+      ) {
+        this.currentCheckIdByRevision.set(
+          content.documentRevision,
+          event.checkId,
+        );
+        this.resumableCheckByRevision.delete(content.documentRevision);
+      } else if (!lifecycleWasKnown) {
+        if (
+          resumable !== undefined &&
+          resumable.terminalOwnerCheckId !== event.checkId
+        ) {
+          this.clearResumableCheck(content.documentRevision);
+        }
+        this.currentCheckIdByRevision.set(
+          content.documentRevision,
+          event.checkId,
+        );
+      } else {
+        return false;
+      }
+    }
+
+    if (lifecycle.closed) {
+      if (content.status !== "closed") {
+        throw new FatalEngineError(
+          "Refine regressed a check after its terminal presentation",
+        );
+      }
+      return true;
+    }
+
+    if (
+      lifecycle.completed &&
+      content.status !== "complete" &&
+      content.status !== "unavailable"
+    ) {
+      throw new FatalEngineError(
+        "Refine regressed a check after its terminal presentation",
+      );
+    }
+
+    if (content.status === "checking") {
+      if (!lifecycle.checkingStarted) {
+        lifecycle.originCauseCommandId = envelope.causeCommandId;
+      }
+      lifecycle.checkingStarted = true;
+      if (content.progress === undefined) {
+        if (lifecycle.progress !== undefined) {
+          throw new FatalEngineError(
+            "Refine removed determinate progress from an active check",
+          );
+        }
+        this.activeCheckingCheckIdByRevision.set(
+          content.documentRevision,
+          event.checkId,
+        );
+        return true;
+      }
+      if (
+        lifecycle.progress !== undefined &&
+        lifecycle.progress.totalUnitCount !== content.progress.totalUnitCount
+      ) {
+        throw new FatalEngineError(
+          "Refine changed the total progress count for an active check",
+        );
+      }
+      if (
+        lifecycle.progress !== undefined &&
+        lifecycle.progress.completedUnitCount >
+          content.progress.completedUnitCount
+      ) {
+        throw new FatalEngineError(
+          "Refine decreased completed progress for an active check",
+        );
+      }
+      lifecycle.progress = content.progress;
+      this.activeCheckingCheckIdByRevision.set(
+        content.documentRevision,
+        event.checkId,
+      );
+      return true;
+    }
+
+    if (content.status === "pending" && lifecycle.checkingStarted) {
+      throw new FatalEngineError("Refine returned an active check to pending");
+    }
+
+    if (
+      content.status !== "unavailable" &&
+      this.activeCheckingCheckIdByRevision.get(content.documentRevision) ===
+      event.checkId
+    ) {
+      this.activeCheckingCheckIdByRevision.delete(content.documentRevision);
+    }
+
+    if (content.status === "complete") {
+      lifecycle.completed = true;
+    } else if (content.status === "closed") {
+      lifecycle.closed = true;
+    }
+    return true;
   }
 
   private async acceptSnapshot(snapshot: DocumentSnapshot): Promise<void> {
@@ -316,7 +838,7 @@ class IntegrationRun {
       return;
     }
 
-    this.latestSnapshot = snapshot;
+    this.advanceAuthoritativeSnapshot(snapshot);
     this.pendingCheck = undefined;
     this.currentCheckId = undefined;
     this.invalidateActions(
@@ -368,8 +890,34 @@ class IntegrationRun {
       }
     }
 
-    const opened = await this.send({ type: "openDocument", snapshot: this.latestSnapshot });
+    const openCommandId = globalThis.crypto.randomUUID();
+    const documentRevision = this.latestSnapshot.revision;
+    const resumableCheckId = this.resumableCheckByRevision.get(
+      documentRevision,
+    )?.checkId;
+    const activeCheckId = this.activeCheckingCheckIdByRevision.get(
+      documentRevision,
+    );
+    const retainedCheckId =
+      resumableCheckId !== undefined &&
+      this.isLiveOrResumableCheck(documentRevision, resumableCheckId)
+        ? resumableCheckId
+        : activeCheckId;
+    this.presentationReplayAlias =
+      retainedCheckId !== undefined &&
+      this.isLiveOrResumableCheck(documentRevision, retainedCheckId)
+        ? {
+            causeCommandId: openCommandId,
+            documentRevision,
+            checkId: retainedCheckId,
+          }
+        : undefined;
+    const opened = await this.send(
+      { type: "openDocument", snapshot: this.latestSnapshot },
+      openCommandId,
+    );
     if (!opened) {
+      this.presentationReplayAlias = undefined;
       throw new Error("Unable to open document on Refine engine connection");
     }
     this.opened = true;
@@ -386,6 +934,8 @@ class IntegrationRun {
     ) {
       return;
     }
+    const previousCheckId = pending.checkId;
+    delete pending.checkId;
     const commandId = globalThis.crypto.randomUUID();
     pending.commandId = commandId;
     const sent = await this.send(
@@ -396,6 +946,9 @@ class IntegrationRun {
     );
     if (!sent && this.pendingCheck === pending) {
       delete pending.commandId;
+      if (previousCheckId !== undefined) {
+        pending.checkId = previousCheckId;
+      }
     }
   }
 
@@ -464,23 +1017,55 @@ class IntegrationRun {
     content: PresentationContent,
     causeCommandId: string | undefined,
   ): Promise<void> {
-    if (content.documentRevision !== this.latestSnapshot?.revision) {
+    const latestSnapshot = this.latestSnapshot;
+    if (!latestSnapshot || content.documentRevision !== latestSnapshot.revision) {
       return;
     }
+    if (
+      this.currentCheckIdByRevision.get(content.documentRevision) !== checkId
+    ) {
+      return;
+    }
+    const causedActionId =
+      causeCommandId === undefined
+        ? undefined
+        : this.actionPresentationAliasesByCommandId.get(causeCommandId)
+            ?.actionId;
     if (this.currentCheckId !== undefined && this.currentCheckId !== checkId) {
       this.invalidateActions(
         { status: "stale" },
-        (pending) => pending.id === this.applyLeaseActionId,
+        (pending) =>
+          pending.id === this.applyLeaseActionId ||
+          pending.id === causedActionId,
       );
     }
     this.currentCheckId = checkId;
+    const pendingCheck = this.pendingCheck;
+    if (
+      pendingCheck?.commandId !== undefined &&
+      pendingCheck.commandId === causeCommandId
+    ) {
+      if (
+        pendingCheck.checkId !== undefined &&
+        pendingCheck.checkId !== checkId
+      ) {
+        throw new FatalEngineError(
+          "Refine attributed one check request to multiple check IDs",
+        );
+      }
+      pendingCheck.checkId = checkId;
+    }
     if (
       (content.status === "complete" || content.status === "unavailable") &&
-      this.pendingCheck?.commandId === causeCommandId
+      pendingCheck?.checkId === checkId
     ) {
       this.pendingCheck = undefined;
     }
-    validatePresentationContent(content, this.latestSnapshot);
+    validatePresentationContent(
+      content,
+      latestSnapshot,
+      this.presentationBoundaries(latestSnapshot),
+    );
     this.appearance = content.appearance;
     const snapshot: PresentationSnapshot = {
       documentRevision: content.documentRevision,
@@ -564,13 +1149,48 @@ class IntegrationRun {
     if (kind === "apply" || kind === "dismiss") {
       await this.disableAction(presentation, suggestionId, kind);
     }
-    try {
-      const sent = await this.send({
-        type: "performAction",
+    const actionCommandId =
+      kind === "dismiss" ? globalThis.crypto.randomUUID() : undefined;
+    const presentationOwnerCheckId = this.currentCheckIdByRevision.get(
+      presentation.documentRevision,
+    );
+    const resumableCheck = this.resumableCheckByRevision.get(
+      presentation.documentRevision,
+    );
+    const canonicalCheckId =
+      resumableCheck !== undefined &&
+      resumableCheck.terminalOwnerCheckId === presentationOwnerCheckId
+        ? resumableCheck.checkId
+        : presentationOwnerCheckId;
+    if (
+      actionCommandId !== undefined &&
+      canonicalCheckId !== undefined &&
+      this.currentCheckId === presentationOwnerCheckId
+    ) {
+      this.actionPresentationAliasesByCommandId.set(actionCommandId, {
         actionId: id,
-        kind,
-        suggestion: { id: suggestionId, documentRevision: presentation.documentRevision },
+        documentRevision: presentation.documentRevision,
+        canonicalCheckId,
+        bindsActiveCheckLifecycle:
+          this.activeCheckingCheckIdByRevision.get(
+            presentation.documentRevision,
+          ) === canonicalCheckId,
       });
+      this.actionAliasCommandIdByActionId.set(id, actionCommandId);
+    }
+    try {
+      const sent = await this.send(
+        {
+          type: "performAction",
+          actionId: id,
+          kind,
+          suggestion: {
+            id: suggestionId,
+            documentRevision: presentation.documentRevision,
+          },
+        },
+        actionCommandId,
+      );
       if (!sent) {
         await this.completeAction(id, {
           status: "unavailable",
@@ -758,7 +1378,7 @@ class IntegrationRun {
         outcomeSnapshot.revision !== this.latestSnapshot?.revision
       ) {
         this.verifySnapshot(outcomeSnapshot);
-        this.latestSnapshot = outcomeSnapshot;
+        this.advanceAuthoritativeSnapshot(outcomeSnapshot);
         this.pendingCheck = undefined;
         this.currentCheckId = undefined;
         this.invalidateActions(
@@ -808,6 +1428,7 @@ class IntegrationRun {
   }
 
   private async completeAction(actionId: string, outcome: ActionOutcome): Promise<void> {
+    this.clearActionPresentationAlias(actionId);
     const associatedTransaction = this.transactionByAction.get(actionId);
     if (associatedTransaction) {
       this.transactionByAction.delete(actionId);
@@ -897,6 +1518,7 @@ class IntegrationRun {
       if (keep(pending)) {
         continue;
       }
+      this.clearActionPresentationAlias(actionId);
       pending.result.resolve(outcome);
       if (outcome.status === "stale") {
         pending.explanation?.push({ status: "stale" });
@@ -907,6 +1529,15 @@ class IntegrationRun {
       this.pendingActions.delete(actionId);
       this.actionByKey.delete(pending.key);
     }
+  }
+
+  private clearActionPresentationAlias(actionId: string): void {
+    const commandId = this.actionAliasCommandIdByActionId.get(actionId);
+    if (commandId === undefined) {
+      return;
+    }
+    this.actionAliasCommandIdByActionId.delete(actionId);
+    this.actionPresentationAliasesByCommandId.delete(commandId);
   }
 
   private publish(snapshot: PresentationSnapshot): Promise<void> {
@@ -999,6 +1630,58 @@ class IntegrationRun {
     if (current) {
       this.retiredRevisions.add(current.revision);
     }
+  }
+
+  private advanceAuthoritativeSnapshot(snapshot: DocumentSnapshot): void {
+    this.latestSnapshot = snapshot;
+    this.presentationValidationCache = {
+      documentRevision: snapshot.revision,
+      boundariesBySource: new Map(),
+    };
+    for (const [checkId, lifecycle] of this.checkPresentationLifecycles) {
+      if (lifecycle.documentRevision !== snapshot.revision) {
+        this.checkPresentationLifecycles.delete(checkId);
+      }
+    }
+    for (const revision of this.currentCheckIdByRevision.keys()) {
+      if (revision !== snapshot.revision) {
+        this.currentCheckIdByRevision.delete(revision);
+      }
+    }
+    for (const revision of this.activeCheckingCheckIdByRevision.keys()) {
+      if (revision !== snapshot.revision) {
+        this.activeCheckingCheckIdByRevision.delete(revision);
+      }
+    }
+    for (const revision of this.resumableCheckByRevision.keys()) {
+      if (revision !== snapshot.revision) {
+        this.resumableCheckByRevision.delete(revision);
+      }
+    }
+    for (const [checkId, alias] of this.checkIdAliases) {
+      if (alias.documentRevision !== snapshot.revision) {
+        this.checkIdAliases.delete(checkId);
+      }
+    }
+    if (
+      this.presentationReplayAlias?.documentRevision !== snapshot.revision
+    ) {
+      this.presentationReplayAlias = undefined;
+    }
+  }
+
+  private presentationBoundaries(
+    snapshot: DocumentSnapshot,
+  ): Map<string, Set<number>> {
+    let cache = this.presentationValidationCache;
+    if (!cache || cache.documentRevision !== snapshot.revision) {
+      cache = {
+        documentRevision: snapshot.revision,
+        boundariesBySource: new Map(),
+      };
+      this.presentationValidationCache = cache;
+    }
+    return cache.boundariesBySource;
   }
 
   private nextPresentationRevision(): number {
@@ -1230,7 +1913,9 @@ function presentationState(content: PresentationContent): PresentationSnapshot["
     case "pending":
       return { type: "pending" };
     case "checking":
-      return { type: "checking" };
+      return content.progress === undefined
+        ? { type: "checking" }
+        : { type: "checking", progress: content.progress };
     case "complete":
       return { type: "complete", coverage: content.coverage ?? "full" };
     case "unavailable":
@@ -1264,6 +1949,29 @@ function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void
       resolve();
     }
   });
+}
+
+function coalesceQueuedPresentation(
+  previous: ServerEventEnvelope,
+  next: ServerEventEnvelope,
+): ServerEventEnvelope | undefined {
+  const previousEvent = previous.event;
+  const nextEvent = next.event;
+  if (
+    previousEvent.type !== "presentationContentReplaced" ||
+    nextEvent.type !== "presentationContentReplaced" ||
+    previous.epoch !== next.epoch ||
+    previous.causeCommandId !== next.causeCommandId ||
+    previousEvent.checkId !== nextEvent.checkId ||
+    previousEvent.content.documentRevision !==
+      nextEvent.content.documentRevision ||
+    previousEvent.content.status !== "checking" ||
+    (nextEvent.content.status !== "checking" &&
+      nextEvent.content.status !== "complete")
+  ) {
+    return undefined;
+  }
+  return next;
 }
 
 function actionOutcomeForRejection(reason: ActionRejectionReason): ActionOutcome {
@@ -1305,6 +2013,7 @@ function isFatalConnectionError(error: unknown): boolean {
 function validatePresentationContent(
   content: PresentationContent,
   snapshot: DocumentSnapshot,
+  boundariesBySource: Map<string, Set<number>>,
 ): void {
   if (
     (content.status === "pending" ||
@@ -1317,7 +2026,6 @@ function validatePresentationContent(
 
   const sources = new Map(snapshot.sources.map((source) => [source.sourceId, source.text]));
   const suggestionIds = new Set<string>();
-  const boundariesBySource = new Map<string, Set<number>>();
   for (const suggestion of content.suggestions) {
     if (suggestionIds.has(suggestion.id)) {
       throw new FatalEngineError("Presentation contained a duplicate suggestion ID");
@@ -1350,5 +2058,22 @@ function validatePresentationContent(
       }
       previousEnd = end;
     }
+  }
+}
+
+function validateCheckingProgress(content: PresentationContent): void {
+  const progress = content.progress;
+  if (progress === undefined) {
+    return;
+  }
+  if (
+    content.status !== "checking" ||
+    !Number.isSafeInteger(progress.completedUnitCount) ||
+    !Number.isSafeInteger(progress.totalUnitCount) ||
+    progress.completedUnitCount < 0 ||
+    progress.totalUnitCount < 0 ||
+    progress.completedUnitCount > progress.totalUnitCount
+  ) {
+    throw new FatalEngineError("Refine sent malformed checking progress");
   }
 }

@@ -1,4 +1,5 @@
 import type {
+  CheckingProgress,
   CheckIntent,
   DocumentRevision,
   DocumentSnapshot,
@@ -83,6 +84,7 @@ export interface PresentationContent {
   readonly documentRevision: DocumentRevision;
   readonly appearance: PresentationAppearance;
   readonly status: "pending" | "checking" | "complete" | "unavailable" | "closed";
+  readonly progress?: CheckingProgress;
   readonly coverage?: "full" | "partial";
   readonly unavailableReason?:
     | "disconnected"

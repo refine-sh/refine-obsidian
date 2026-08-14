@@ -86,13 +86,18 @@ export interface PresentedSuggestion {
   readonly availableActions: readonly SuggestionActionKind[];
 }
 
+export interface CheckingProgress {
+  readonly completedUnitCount: number;
+  readonly totalUnitCount: number;
+}
+
 export interface PresentationSnapshot {
   readonly documentRevision: DocumentRevision;
   readonly presentationRevision: number;
   readonly appearance: PresentationAppearance;
   readonly state:
     | { readonly type: "pending" }
-    | { readonly type: "checking" }
+    | { readonly type: "checking"; readonly progress?: CheckingProgress }
     | { readonly type: "complete"; readonly coverage: "full" | "partial" }
     | {
         readonly type: "unavailable";

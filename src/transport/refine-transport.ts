@@ -393,6 +393,12 @@ function decodePresentationContent(value: unknown): PresentationContent {
   }
   const suggestions = content.suggestions.map(decodePresentedSuggestion);
   const appearance = decodePresentationAppearance(content.appearance);
+  const progress = content.progress === undefined
+    ? undefined
+    : decodeCheckingProgress(content.progress);
+  if (progress !== undefined && content.status !== "checking") {
+    throw new TransportProtocolError("Presentation progress requires checking status");
+  }
   if (content.status === "complete") {
     if (content.coverage !== "full" && content.coverage !== "partial") {
       throw new TransportProtocolError("Complete presentation requires coverage");
@@ -417,11 +423,44 @@ function decodePresentationContent(value: unknown): PresentationContent {
       suggestions,
     };
   }
+  if (content.status === "checking" && progress !== undefined) {
+    return {
+      documentRevision: content.documentRevision,
+      status: "checking",
+      progress,
+      appearance,
+      suggestions,
+    };
+  }
   return {
     documentRevision: content.documentRevision,
     status: content.status,
     appearance,
     suggestions,
+  };
+}
+
+function decodeCheckingProgress(
+  value: unknown,
+): import("../integration/types").CheckingProgress {
+  const progress = requireRecord(value, "presentation.progress");
+  const completedUnitCount = progress.completedUnitCount;
+  const totalUnitCount = progress.totalUnitCount;
+  if (
+    !hasExactKeys(progress, ["completedUnitCount", "totalUnitCount"]) ||
+    typeof completedUnitCount !== "number" ||
+    typeof totalUnitCount !== "number" ||
+    !Number.isSafeInteger(completedUnitCount) ||
+    !Number.isSafeInteger(totalUnitCount) ||
+    completedUnitCount < 0 ||
+    totalUnitCount < 0 ||
+    completedUnitCount > totalUnitCount
+  ) {
+    throw new TransportProtocolError("Malformed presentation progress");
+  }
+  return {
+    completedUnitCount,
+    totalUnitCount,
   };
 }
 

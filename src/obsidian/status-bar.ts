@@ -1,3 +1,4 @@
+import type { CheckingProgress } from "../integration/types";
 import type { RequiredCompatibilityUpdate } from "../transport/refine-transport";
 import { incompatibleProtocolStatus } from "./compatibility";
 import type { ObsidianSessionState } from "./session-manager";
@@ -7,7 +8,11 @@ export type RefineStatusBarState =
   | { readonly type: "idle" }
   | { readonly type: "connecting" }
   | { readonly type: "disconnected" }
-  | { readonly type: "checking" }
+  | {
+      readonly type: "checking";
+      readonly count: number;
+      readonly progress?: CheckingProgress;
+    }
   | { readonly type: "suggestions"; readonly count: number }
   | { readonly type: "partial"; readonly count: number }
   | { readonly type: "checkFailed" }
@@ -82,10 +87,14 @@ export function createRefineStatusBarController(
           element,
           renderIcon,
           "checking",
-          CHECKING_LABEL,
+          checkingLabel(state),
           "loader-circle",
-          true,
+          state.progress === undefined,
         );
+        if (state.progress !== undefined) {
+          appendCheckingProgress(element, state.progress);
+        }
+        appendSuggestionCount(element, state.count, state.progress !== undefined);
       } else if (state.type === "suggestions") {
         if (state.count === 0) {
           renderState(element, renderIcon, "idle", IDLE_LABEL, "spell-check-2");
@@ -166,7 +175,13 @@ export function statusBarStateForSession(
     case "pending":
       return { type: "idle" };
     case "checking":
-      return { type: "checking" };
+      return snapshot.state.progress === undefined
+        ? { type: "checking", count: snapshot.suggestions.length }
+        : {
+            type: "checking",
+            count: snapshot.suggestions.length,
+            progress: snapshot.state.progress,
+          };
     case "complete":
       return snapshot.state.coverage === "partial"
         ? { type: "partial", count: snapshot.suggestions.length }
@@ -184,8 +199,42 @@ export function statusBarStateForSession(
   }
 }
 
-function appendSuggestionCount(element: HTMLElement, count: number): void {
-  if (count === 0) {
+function checkingLabel(
+  state: Extract<RefineStatusBarState, { type: "checking" }>,
+): string {
+  const details: string[] = [];
+  if (state.progress !== undefined) {
+    const { completedUnitCount, totalUnitCount } = state.progress;
+    details.push(
+      `${completedUnitCount} of ${totalUnitCount} ` +
+        `${totalUnitCount === 1 ? "unit" : "units"} complete`,
+    );
+  }
+  if (state.count > 0 || state.progress !== undefined) {
+    details.push(`${state.count} ${state.count === 1 ? "suggestion" : "suggestions"}`);
+  }
+  return details.length === 0
+    ? CHECKING_LABEL
+    : `Refine: Checking current note, ${details.join(", ")}. Open Refine menu`;
+}
+
+function appendCheckingProgress(
+  element: HTMLElement,
+  progress: CheckingProgress,
+): void {
+  const indicator = element.ownerDocument.createElement("span");
+  indicator.className = "refine-status-bar__progress";
+  indicator.textContent = `${progress.completedUnitCount}/${progress.totalUnitCount}`;
+  indicator.setAttribute("aria-hidden", "true");
+  element.append(indicator);
+}
+
+function appendSuggestionCount(
+  element: HTMLElement,
+  count: number,
+  includeZero = false,
+): void {
+  if (count === 0 && !includeZero) {
     return;
   }
   const badge = element.ownerDocument.createElement("span");

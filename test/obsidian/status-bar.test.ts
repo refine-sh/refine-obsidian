@@ -95,7 +95,7 @@ describe("Refine status bar", () => {
       onActivate: vi.fn(),
     });
 
-    controller.setState({ type: "checking" });
+    controller.setState({ type: "checking", count: 0 });
 
     const label = "Refine: Checking current note. Open Refine menu";
     expect(element.dataset.refineState).toBe("checking");
@@ -103,6 +103,47 @@ describe("Refine status bar", () => {
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.getAttribute("aria-busy")).toBe("true");
     expect(renderIcon).toHaveBeenLastCalledWith(element, "loader-circle");
+  });
+
+  it("shows determinate checking progress with the current suggestion count", () => {
+    const element = document.createElement("div");
+    const controller = createRefineStatusBarController({
+      element,
+      renderIcon: vi.fn(),
+      onActivate: vi.fn(),
+    });
+
+    controller.setState({
+      type: "checking",
+      count: 3,
+      progress: { completedUnitCount: 2, totalUnitCount: 5 },
+    });
+
+    const label =
+      "Refine: Checking current note, 2 of 5 units complete, 3 suggestions. " +
+      "Open Refine menu";
+    expect(element.dataset.refineState).toBe("checking");
+    expect(element.title).toBe(label);
+    expect(element.getAttribute("aria-label")).toBe(label);
+    expect(element.getAttribute("aria-busy")).toBeNull();
+    expect(element.querySelector(".refine-status-bar__progress")?.textContent).toBe(
+      "2/5",
+    );
+    expect(
+      element.querySelector(".refine-status-bar__progress")?.getAttribute("aria-hidden"),
+    ).toBe("true");
+    expect(element.querySelector(".refine-status-bar__count")?.textContent).toBe("3");
+
+    controller.setState({
+      type: "checking",
+      count: 0,
+      progress: { completedUnitCount: 0, totalUnitCount: 5 },
+    });
+    expect(element.getAttribute("aria-label")).toBe(
+      "Refine: Checking current note, 0 of 5 units complete, 0 suggestions. " +
+        "Open Refine menu",
+    );
+    expect(element.querySelector(".refine-status-bar__count")?.textContent).toBe("0");
   });
 
   it("shows the number of available writing suggestions", () => {
@@ -280,7 +321,21 @@ describe("Refine status bar", () => {
     ],
     [
       presented({ type: "checking" }),
-      { type: "checking" } as const,
+      { type: "checking", count: 0 } as const,
+    ],
+    [
+      presented(
+        {
+          type: "checking",
+          progress: { completedUnitCount: 2, totalUnitCount: 5 },
+        },
+        3,
+      ),
+      {
+        type: "checking",
+        count: 3,
+        progress: { completedUnitCount: 2, totalUnitCount: 5 },
+      } as const,
     ],
     [
       presented({ type: "complete", coverage: "full" }, 2),

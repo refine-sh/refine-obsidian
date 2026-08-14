@@ -205,6 +205,46 @@ describe("Refine transport handshake", () => {
     await session.close();
   });
 
+  it("decodes optional determinate progress on checking presentations", async () => {
+    const fixture = await connectedEventFixture();
+    fixture.frames.push(checkingProgressEvent(
+      { completedUnitCount: 2, totalUnitCount: 5 },
+    ));
+
+    await expect(fixture.events.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "presentationContentReplaced",
+          content: {
+            status: "checking",
+            progress: { completedUnitCount: 2, totalUnitCount: 5 },
+          },
+        },
+      },
+    });
+
+    fixture.frames.push(checkingProgressEvent(undefined, "checking", 2));
+    await expect(fixture.events.next()).resolves.not.toHaveProperty(
+      "value.event.content.progress",
+    );
+
+    await fixture.session.close();
+  });
+
+  it.each([
+    ["a negative count", "checking", { completedUnitCount: -1, totalUnitCount: 5 }],
+    ["a negative total", "checking", { completedUnitCount: 0, totalUnitCount: -1 }],
+    ["a fractional count", "checking", { completedUnitCount: 1.5, totalUnitCount: 5 }],
+    ["completed above total", "checking", { completedUnitCount: 6, totalUnitCount: 5 }],
+    ["progress outside checking", "complete", { completedUnitCount: 1, totalUnitCount: 1 }],
+  ] as const)("rejects presentation progress with %s", async (_case, status, progress) => {
+    const fixture = await connectedEventFixture();
+    fixture.frames.push(checkingProgressEvent(progress, status));
+
+    await expect(fixture.events.next()).rejects.toThrow(TransportProtocolError);
+    await fixture.session.close();
+  });
+
   it("rejects a welcome from a replaced server epoch", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => {
@@ -737,6 +777,65 @@ function connectionConnector(
         receive: () => frames,
         close: async () => frames.close(),
       };
+    },
+  };
+}
+
+async function connectedEventFixture() {
+  const frames = new AsyncQueue<unknown>();
+  const connector = connectionConnector(frames, [], () => {
+    frames.push({
+      type: "welcome",
+      protocol: { major: 2, minor: 1 },
+      serverEpoch: "epoch-1",
+      runResumed: false,
+      limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+      capabilities: [],
+    });
+  });
+  const session = await new RefineTransport({
+    client: { id: "test-client", version: "0.1.0", host: "test-host" },
+    connector,
+    endpointLocator: endpointLocator(),
+  }).connect(new AbortController().signal);
+  return {
+    frames,
+    session,
+    events: session.events(new AbortController().signal)[Symbol.asyncIterator](),
+  };
+}
+
+function checkingProgressEvent(
+  progress: unknown = undefined,
+  status: "checking" | "complete" = "checking",
+  sequence = 1,
+): unknown {
+  return {
+    type: "event",
+    sequence,
+    epoch: "epoch-1",
+    event: {
+      type: "presentationContentReplaced",
+      checkId: "check-progress",
+      content: {
+        documentRevision: "doc:0",
+        status,
+        ...(status === "complete" ? { coverage: "full" } : {}),
+        ...(progress === undefined ? {} : { progress }),
+        appearance: {
+          highlight: {
+            style: "underline",
+            grammarColor: "#FF2D55",
+            fluencyColor: "#007AFF",
+          },
+          diff: {
+            additionColor: "#34C759",
+            deletionColor: "#FF3B30",
+            showHiddenWhitespace: true,
+          },
+        },
+        suggestions: [],
+      },
     },
   };
 }
