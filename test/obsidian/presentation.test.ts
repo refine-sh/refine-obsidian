@@ -70,14 +70,305 @@ describe("Obsidian presentation", () => {
     expect(document.querySelectorAll(".refine-suggestion, .refine-insertion-anchor")).toHaveLength(0);
   });
 
-  it("clears stale suggestion UI synchronously when Markdown changes", async () => {
-    const { host, view } = createHost("[create an link](URL)or", "stale-ui");
-    await host.present(presentation("stale-ui:0"), actions());
-    expect(document.querySelector(".refine-suggestion")).not.toBeNull();
+  it("keeps only mapped unaffected suggestions as inert provisional decorations", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "provisional",
+    );
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    await host.present(
+      separatedSuggestionPresentation("provisional:0"),
+      actions({ apply }),
+    );
+    const liveSecond = [...document.querySelectorAll<HTMLElement>(
+      ".refine-suggestion",
+    )].find((element) => view.posAtDOM(element, 0) === 11);
+    expect(liveSecond).not.toBeUndefined();
+    if (!liveSecond) {
+      throw new Error("expected the second live suggestion");
+    }
+    await hover(view, liveSecond, 12);
+    expect(document.querySelector(".refine-tooltip")).not.toBeNull();
 
-    view.dispatch({ changes: { from: 8, to: 10, insert: "a" } });
+    view.dispatch({ changes: { from: 1, insert: "x" } });
 
-    expect(document.querySelector(".refine-suggestion, .refine-insertion-anchor")).toBeNull();
+    const provisional = document.querySelectorAll<HTMLElement>(
+      ".refine-suggestion",
+    );
+    const anchor = document.querySelector<HTMLElement>(
+      ".refine-insertion-anchor",
+    );
+    expect(provisional).toHaveLength(1);
+    expect(view.posAtDOM(provisional[0]!, 0)).toBe(12);
+    expect(provisional[0]?.textContent).toBe("bad");
+    expect(provisional[0]?.dataset.refineSuggestionId).toBeUndefined();
+    expect(provisional[0]?.hasAttribute("role")).toBe(false);
+    expect(provisional[0]?.hasAttribute("tabindex")).toBe(false);
+    expect(provisional[0]?.hasAttribute("aria-label")).toBe(false);
+    expect(provisional[0]?.hasAttribute("aria-hidden")).toBe(false);
+    expect(provisional[0]?.classList).toContain(
+      "refine-suggestion--provisional",
+    );
+    expect(anchor).not.toBeNull();
+    expect(view.posAtDOM(anchor!, 0)).toBe(22);
+    expect(anchor?.dataset.refineSuggestionId).toBeUndefined();
+    expect(anchor?.hasAttribute("role")).toBe(false);
+    expect(anchor?.hasAttribute("tabindex")).toBe(false);
+    expect(anchor?.getAttribute("aria-hidden")).toBe("true");
+    expect(anchor?.style.pointerEvents).toBe("none");
+    expect(document.querySelector(".refine-tooltip")).toBeNull();
+
+    provisional[0]?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    provisional[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await Promise.resolve();
+    expect(apply).not.toHaveBeenCalled();
+
+    // Touching the mapped zero-width fragment in a later transaction drops its
+    // whole group, proving successive edits use the remapped range metadata.
+    view.dispatch({
+      changes: { from: view.posAtDOM(anchor!, 0), insert: "!" },
+    });
+    expect(document.querySelector(
+      ".refine-suggestion, .refine-insertion-anchor",
+    )).toBeNull();
+  });
+
+  it("keeps live suggestion actions after a same-text replacement", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "same-text",
+    );
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    await host.present(
+      separatedSuggestionPresentation("same-text:0"),
+      actions({ apply }),
+    );
+
+    view.dispatch({ changes: { from: 0, to: 3, insert: "bad" } });
+
+    const highlight = document.querySelector<HTMLElement>(
+      "[data-refine-suggestion-id=first]",
+    );
+    expect(highlight).not.toBeNull();
+    highlight?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    const button = document.querySelector<HTMLButtonElement>(
+      ".refine-tooltip button",
+    );
+    expect(button?.textContent).toBe("Apply");
+    button?.click();
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledWith("first"));
+  });
+
+  it("returns focus to the editor when a live highlight becomes provisional", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "provisional-focus",
+    );
+    await host.present(
+      separatedSuggestionPresentation("provisional-focus:0"),
+      actions(),
+    );
+    view.dispatch({ selection: { anchor: 15 } });
+    const highlight = [...document.querySelectorAll<HTMLElement>(
+      "[data-refine-suggestion-id]",
+    )].find((element) => view.posAtDOM(element, 0) === 11);
+    expect(highlight).not.toBeUndefined();
+    highlight?.focus();
+    expect(document.activeElement).toBe(highlight);
+
+    view.dispatch({ changes: { from: 1, insert: "x" } });
+
+    expect(document.activeElement).toBe(view.contentDOM);
+    expect(view.state.selection.main.anchor).toBe(16);
+    expect(document.querySelector(
+      ".refine-suggestion--provisional",
+    )).not.toBeNull();
+  });
+
+  it("maps atomic old-coordinate changes across an astral prefix", async () => {
+    const { host, view } = createHost(
+      "😀 bad first. bad second.",
+      "atomic-utf16",
+    );
+    await host.present(
+      separatedSuggestionPresentation("atomic-utf16:0", 3),
+      actions(),
+    );
+
+    view.dispatch({
+      changes: [
+        { from: 0, to: 2, insert: "😀😀" },
+        { from: 4, insert: "x" },
+        { from: 13, insert: "!" },
+      ],
+    });
+
+    const provisional = document.querySelectorAll<HTMLElement>(
+      ".refine-suggestion",
+    );
+    const anchor = document.querySelector<HTMLElement>(
+      ".refine-insertion-anchor",
+    );
+    expect(provisional).toHaveLength(1);
+    expect(view.posAtDOM(provisional[0]!, 0)).toBe(18);
+    expect(view.posAtDOM(anchor!, 0)).toBe(28);
+    expect(provisional[0]?.dataset.refineSuggestionId).toBeUndefined();
+    expect(anchor?.dataset.refineSuggestionId).toBeUndefined();
+  });
+
+  it("drops every fragment of a suggestion when one highlight is touched", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "provisional-group",
+    );
+    await host.present(
+      separatedSuggestionPresentation("provisional-group:0"),
+      actions(),
+    );
+
+    view.dispatch({ changes: { from: 12, insert: "x" } });
+
+    const remaining = document.querySelectorAll<HTMLElement>(
+      ".refine-suggestion",
+    );
+    expect(remaining).toHaveLength(1);
+    expect(view.posAtDOM(remaining[0]!, 0)).toBe(0);
+    expect(document.querySelector(".refine-insertion-anchor")).toBeNull();
+  });
+
+  it("carries unaffected provisional decorations through a host Apply receipt", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "provisional-apply",
+    );
+    await host.present(
+      separatedSuggestionPresentation("provisional-apply:0"),
+      actions(),
+    );
+
+    const outcome = await host.apply({
+      expectedRevision: "provisional-apply:0",
+      sourceId: "document",
+      edits: [{
+        range: { location: 0, length: 3 },
+        expectedText: "bad",
+        replacement: "poor",
+      }],
+    });
+    if (outcome.status !== "applied") {
+      throw new Error("expected the host Apply to succeed");
+    }
+
+    const provisional = document.querySelector<HTMLElement>(
+      ".refine-suggestion",
+    );
+    expect(provisional).not.toBeNull();
+    expect(view.posAtDOM(provisional!, 0)).toBe(12);
+    expect(document.querySelector(".refine-insertion-anchor")).not.toBeNull();
+
+    await host.present(
+      lifecyclePresentation(outcome.snapshot.revision, 2, { type: "pending" }),
+      actions(),
+    );
+    expect(document.querySelector(".refine-suggestion")).toBe(provisional);
+  });
+
+  it.each([
+    { type: "checking" as const },
+    { type: "complete" as const, coverage: "full" as const },
+    { type: "unavailable" as const, reason: "checkFailed" as const },
+    { type: "closed" as const },
+  ])(
+    "preserves provisional decorations through pending, then clears them on $type",
+    async (state) => {
+      const { host, view } = createHost(
+        "bad first. bad second.",
+        `provisional-${state.type}`,
+      );
+      await host.present(
+        separatedSuggestionPresentation(`provisional-${state.type}:0`),
+        actions(),
+      );
+
+      view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+      expect(document.querySelectorAll(
+        ".refine-suggestion, .refine-insertion-anchor",
+      )).toHaveLength(3);
+
+      await host.present(
+        lifecyclePresentation(`provisional-${state.type}:1`, 2, { type: "pending" }),
+        actions(),
+      );
+      expect(document.querySelectorAll(
+        ".refine-suggestion, .refine-insertion-anchor",
+      )).toHaveLength(3);
+
+      await host.present(
+        lifecyclePresentation(`provisional-${state.type}:1`, 3, state),
+        actions(),
+      );
+      expect(document.querySelector(
+        ".refine-suggestion, .refine-insertion-anchor",
+      )).toBeNull();
+    },
+  );
+
+  it("ignores a stale presentation while provisional decorations await the current revision", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "provisional-stale",
+    );
+    await host.present(
+      separatedSuggestionPresentation("provisional-stale:0"),
+      actions(),
+    );
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+
+    await host.present(
+      lifecyclePresentation("provisional-stale:0", 2, { type: "pending" }),
+      actions(),
+    );
+
+    expect(document.querySelectorAll(
+      ".refine-suggestion, .refine-insertion-anchor",
+    )).toHaveLength(3);
+  });
+
+  it("clears a live presentation when the host receives a mismatched revision", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "live-mismatch",
+    );
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    await host.present(
+      separatedSuggestionPresentation("live-mismatch:0"),
+      actions({ apply }),
+    );
+    const highlight = document.querySelector<HTMLElement>(
+      "[data-refine-suggestion-id]",
+    );
+    expect(highlight).not.toBeNull();
+    await hover(view, highlight, 1);
+    expect(document.querySelector(".refine-tooltip")).not.toBeNull();
+    expect(document.querySelector(".refine-tooltip button")?.textContent).toBe(
+      "Apply",
+    );
+
+    await host.present(
+      lifecyclePresentation("some-other-revision", 2, { type: "pending" }),
+      actions(),
+    );
+
+    expect(document.querySelector(
+      ".refine-suggestion, .refine-insertion-anchor",
+    )).toBeNull();
+    expect(document.querySelector(".refine-tooltip")).toBeNull();
+    expect(document.querySelector(".refine-tooltip button")).toBeNull();
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it("forwards an opaque suggestion action from the native suggestion card", async () => {
@@ -1776,6 +2067,55 @@ function presentation(revision: string): PresentationSnapshot {
         availableActions: ["apply"],
       },
     ],
+  };
+}
+
+function separatedSuggestionPresentation(
+  revision: string,
+  locationOffset = 0,
+): PresentationSnapshot {
+  return {
+    documentRevision: revision,
+    presentationRevision: 1,
+    appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    state: { type: "complete", coverage: "full" },
+    suggestions: [
+      {
+        id: "first",
+        sourceId: "document",
+        kind: "grammar",
+        attribution: testAttribution,
+        highlightRanges: [{ location: locationOffset, length: 3 }],
+        diff: [{ kind: "delete", text: "bad" }],
+        availableActions: ["apply"],
+      },
+      {
+        id: "second",
+        sourceId: "document",
+        kind: "grammar",
+        attribution: testAttribution,
+        highlightRanges: [
+          { location: locationOffset + 11, length: 3 },
+          { location: locationOffset + 21, length: 0 },
+        ],
+        diff: [{ kind: "delete", text: "bad" }],
+        availableActions: ["apply"],
+      },
+    ],
+  };
+}
+
+function lifecyclePresentation(
+  documentRevision: string,
+  presentationRevision: number,
+  state: PresentationSnapshot["state"],
+): PresentationSnapshot {
+  return {
+    documentRevision,
+    presentationRevision,
+    appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    state,
+    suggestions: [],
   };
 }
 

@@ -16,6 +16,7 @@ import type {
 import { AsyncQueue } from "../shared/async-queue";
 import { graphemeBoundaries } from "../shared/grapheme-boundaries";
 import {
+  clearLivePresentationPreservingProvisional,
   clearPresentation,
   installPresentation,
   refinePresentationExtension,
@@ -175,7 +176,7 @@ export class ObsidianWritingHost {
       return;
     }
     if (snapshot.documentRevision !== this.snapshot().revision) {
-      clearPresentation(this.view);
+      clearLivePresentationPreservingProvisional(this.view);
       return;
     }
     installPresentation(

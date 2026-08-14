@@ -10,6 +10,7 @@ import {
 import {
   StateEffect,
   StateField,
+  type ChangeDesc,
   type Extension,
   type Range,
 } from "@codemirror/state";
@@ -40,11 +41,31 @@ import {
 export type { ExplanationRenderer } from "./suggestion-card";
 
 interface InstalledPresentation {
+  readonly type: "live";
   readonly snapshot: PresentationSnapshot;
   readonly actions: SuggestionActions;
   readonly decorations: DecorationSet;
   readonly renderExplanation: ExplanationRenderer;
 }
+
+interface ProvisionalSuggestion {
+  readonly style: PresentationAppearance["highlight"]["style"];
+  readonly color: string;
+  readonly highlightRanges: readonly {
+    readonly location: number;
+    readonly length: number;
+  }[];
+}
+
+interface ProvisionalPresentation {
+  // Deliberately retains neither suggestion IDs nor action closures from the
+  // retired document revision.
+  readonly type: "provisional";
+  readonly decorations: DecorationSet;
+  readonly suggestions: readonly ProvisionalSuggestion[];
+}
+
+type PresentationState = InstalledPresentation | ProvisionalPresentation;
 
 interface SuggestionHit {
   readonly suggestionId: string;
@@ -83,14 +104,32 @@ const suggestionCardViewportGutterPx = 16;
 const suggestionCardGapPx = 4;
 
 const replacePresentation = StateEffect.define<InstalledPresentation | undefined>();
+const clearLivePresentationEffect = StateEffect.define<null>();
 
-const presentationField = StateField.define<InstalledPresentation | undefined>({
+const presentationField = StateField.define<PresentationState | undefined>({
   create: () => undefined,
   update(value, transaction) {
-    let next = transaction.docChanged ? undefined : value;
+    const documentTextChanged = transaction.docChanged &&
+      !transaction.startState.doc.eq(transaction.newDoc);
+    let next = documentTextChanged
+      ? provisionalPresentation(value, transaction.changes)
+      : value;
     for (const effect of transaction.effects) {
       if (effect.is(replacePresentation)) {
-        next = effect.value;
+        // Pending is lifecycle state only. Keep inert mapped pixels until the
+        // first authoritative presentation for the new revision arrives.
+        next =
+          effect.value !== undefined &&
+          effect.value.snapshot.state.type === "pending" &&
+          effect.value.snapshot.suggestions.length === 0 &&
+          next?.type === "provisional"
+            ? next
+            : effect.value;
+      } else if (
+        effect.is(clearLivePresentationEffect) &&
+        next?.type === "live"
+      ) {
+        next = undefined;
       }
     }
     return next;
@@ -101,7 +140,7 @@ const presentationField = StateField.define<InstalledPresentation | undefined>({
 
 class InsertionAnchorWidget extends WidgetType {
   constructor(
-    private readonly suggestionId: string,
+    private readonly suggestionId: string | undefined,
     private readonly style: PresentationAppearance["highlight"]["style"],
     private readonly color: string,
   ) {
@@ -124,14 +163,103 @@ class InsertionAnchorWidget extends WidgetType {
     const anchor = view.dom.ownerDocument.createElement("span");
     anchor.className =
       `refine-insertion-anchor refine-insertion-anchor--${this.style}`;
-    anchor.dataset.refineSuggestionId = this.suggestionId;
-    anchor.setAttribute("aria-label", "Refine insertion suggestion");
-    anchor.setAttribute("role", "button");
     anchor.style.setProperty("--no-tooltip", "true");
     anchor.style.setProperty("--refine-suggestion-color", this.color);
-    anchor.tabIndex = 0;
+    if (this.suggestionId === undefined) {
+      anchor.classList.add("refine-insertion-anchor--provisional");
+      anchor.setAttribute("aria-hidden", "true");
+      anchor.style.pointerEvents = "none";
+    } else {
+      anchor.dataset.refineSuggestionId = this.suggestionId;
+      anchor.setAttribute("aria-label", "Refine insertion suggestion");
+      anchor.setAttribute("role", "button");
+      anchor.tabIndex = 0;
+    }
     return anchor;
   }
+}
+
+function livePresentation(
+  presentation: PresentationState | undefined,
+): InstalledPresentation | undefined {
+  return presentation?.type === "live" ? presentation : undefined;
+}
+
+function provisionalPresentation(
+  presentation: PresentationState | undefined,
+  changes: ChangeDesc,
+): ProvisionalPresentation | undefined {
+  if (!presentation) {
+    return undefined;
+  }
+  const candidates = presentation.type === "provisional"
+    ? presentation.suggestions
+    : provisionalSuggestions(
+      presentation.snapshot,
+      changes.length,
+    );
+  const changedRanges: Array<{ readonly from: number; readonly to: number }> = [];
+  changes.iterChangedRanges((from, to) => {
+    changedRanges.push({ from, to });
+  }, true);
+  const suggestions = candidates.flatMap((suggestion) => {
+    if (suggestion.highlightRanges.some((range) =>
+      changedRanges.some((change) => rangesTouch(range, change))
+    )) {
+      return [];
+    }
+    return [{
+      ...suggestion,
+      highlightRanges: suggestion.highlightRanges.map((range) => {
+        const location = changes.mapPos(range.location, 1);
+        const end = range.length === 0
+          ? location
+          : changes.mapPos(range.location + range.length, -1);
+        return { location, length: end - location };
+      }),
+    }];
+  });
+  if (suggestions.length === 0) {
+    return undefined;
+  }
+  return {
+    type: "provisional",
+    suggestions,
+    decorations: buildProvisionalDecorations(changes.newLength, suggestions),
+  };
+}
+
+function provisionalSuggestions(
+  snapshot: PresentationSnapshot,
+  documentLength: number,
+): ProvisionalSuggestion[] {
+  const style = snapshot.appearance.highlight.style;
+  return snapshot.suggestions.flatMap((suggestion) => {
+    if (
+      suggestion.sourceId !== "document" ||
+      suggestion.highlightRanges.length === 0 ||
+      suggestion.highlightRanges.some(({ location, length }) =>
+        location < 0 || length < 0 || location + length > documentLength
+      )
+    ) {
+      return [];
+    }
+    return [{
+      style,
+      color: suggestionColor(snapshot.appearance, suggestion.kind),
+      highlightRanges: suggestion.highlightRanges,
+    }];
+  });
+}
+
+function rangesTouch(
+  range: { readonly location: number; readonly length: number },
+  change: { readonly from: number; readonly to: number },
+): boolean {
+  const end = range.location + range.length;
+  // Treat shared boundaries as touched so insertion anchors and replacement
+  // edges fail closed instead of acquiring ambiguous ownership.
+  return change.from <= end && range.location <= change.to;
 }
 
 class PresentationPopover implements PluginValue {
@@ -165,16 +293,34 @@ class PresentationPopover implements PluginValue {
   }
 
   update(update: ViewUpdate): void {
+    const activeElement = this.view.dom.ownerDocument.activeElement;
+    const presentation = this.view.state.field(presentationField, false);
+    const shouldRestoreEditorFocus =
+      presentation?.type !== "live" &&
+      activeElement !== null &&
+      this.view.contentDOM.contains(activeElement) &&
+      activeElement.matches(
+        ".refine-suggestion, .refine-insertion-anchor",
+      );
     if (
       update.docChanged ||
       update.transactions.some((transaction) =>
-        transaction.effects.some((effect) => effect.is(replacePresentation)),
+        transaction.effects.some((effect) =>
+          effect.is(replacePresentation) ||
+          effect.is(clearLivePresentationEffect)
+        ),
       )
     ) {
       // Presentation freshness and pointer lifecycle are independent. Closing
       // the card here is enough; clearing gesture state could let a pending
       // hover timer reopen while the user is still selecting text.
       this.close();
+    }
+    if (shouldRestoreEditorFocus) {
+      // CodeMirror may reuse the focused live mark DOM node for an inert
+      // provisional decoration. Move focus back to the editor while leaving
+      // its already-mapped selection untouched.
+      this.view.focus();
     }
   }
 
@@ -219,7 +365,9 @@ class PresentationPopover implements PluginValue {
     mode: SuggestionCardMode,
     trigger?: HTMLElement,
   ): void {
-    const presentation = this.view.state.field(presentationField, false);
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
     const suggestion = presentation?.snapshot.suggestions.find(
       (candidate) => candidate.id === suggestionId,
     );
@@ -448,7 +596,9 @@ class PresentationPopover implements PluginValue {
   }
 
   private hoverMatch(event: MouseEvent): SuggestionRangeMatch | undefined {
-    const presentation = this.view.state.field(presentationField, false);
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
     const position = this.view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (!presentation || position === null) {
       return undefined;
@@ -475,7 +625,9 @@ class PresentationPopover implements PluginValue {
   }
 
   private scheduleHoverOpen(match: SuggestionRangeMatch): void {
-    const presentation = this.view.state.field(presentationField, false);
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
     if (!presentation || !ownerWindow) {
       return;
@@ -491,7 +643,9 @@ class PresentationPopover implements PluginValue {
       if (this.pendingHover !== candidate) {
         return;
       }
-      const current = this.view.state.field(presentationField, false);
+      const current = livePresentation(
+        this.view.state.field(presentationField, false),
+      );
       if (
         !current ||
         current.snapshot.presentationRevision !== candidate.presentationRevision ||
@@ -691,6 +845,7 @@ export function installPresentation(
 ): void {
   view.dispatch({
     effects: replacePresentation.of({
+      type: "live",
       snapshot,
       actions,
       renderExplanation,
@@ -701,6 +856,12 @@ export function installPresentation(
 
 export function clearPresentation(view: EditorView): void {
   view.dispatch({ effects: replacePresentation.of(undefined) });
+}
+
+export function clearLivePresentationPreservingProvisional(
+  view: EditorView,
+): void {
+  view.dispatch({ effects: clearLivePresentationEffect.of(null) });
 }
 
 function pointerSide(
@@ -923,6 +1084,50 @@ function buildDecorations(
               tabindex: "0",
             },
             class: `refine-suggestion refine-suggestion--${style}`,
+            inclusive: false,
+          }).range(from, to),
+        );
+      }
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+function buildProvisionalDecorations(
+  documentLength: number,
+  suggestions: readonly ProvisionalSuggestion[],
+): DecorationSet {
+  const ranges: Range<Decoration>[] = [];
+  for (const suggestion of suggestions) {
+    for (const range of suggestion.highlightRanges) {
+      const from = range.location;
+      const to = from + range.length;
+      if (from < 0 || to < from || to > documentLength) {
+        continue;
+      }
+      if (range.length === 0) {
+        ranges.push(
+          Decoration.widget({
+            side: 1,
+            widget: new InsertionAnchorWidget(
+              undefined,
+              suggestion.style,
+              suggestion.color,
+            ),
+          }).range(from),
+        );
+      } else {
+        ranges.push(
+          Decoration.mark({
+            attributes: {
+              style: [
+                "--no-tooltip: true",
+                `--refine-suggestion-color: ${suggestion.color}`,
+              ].join("; "),
+            },
+            class:
+              `refine-suggestion refine-suggestion--${suggestion.style} ` +
+              "refine-suggestion--provisional",
             inclusive: false,
           }).range(from, to),
         );
