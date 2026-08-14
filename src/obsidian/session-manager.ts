@@ -35,6 +35,7 @@ export interface ObsidianSessionManagerOptions {
 
 interface ActiveSession {
   readonly view: EditorView;
+  readonly documentIdentity: object;
   readonly host: ObsidianWritingHost;
   readonly controller: AbortController;
 }
@@ -55,11 +56,15 @@ export class ObsidianSessionManager {
     this.onStateChange({ type: "inactive" });
   }
 
-  activate(view: EditorView): void {
+  activate(view: EditorView, documentIdentity: object): void {
     if (this.disposed) {
       return;
     }
-    if (this.active?.view === view && this.active.host.isAttached()) {
+    if (
+      this.active?.view === view &&
+      this.active.documentIdentity === documentIdentity &&
+      this.active.host.isAttached()
+    ) {
       return;
     }
     this.stopActive(false);
@@ -76,7 +81,7 @@ export class ObsidianSessionManager {
         }
       },
     });
-    session = { view, host, controller };
+    session = { view, documentIdentity, host, controller };
     this.active = session;
     this.onStateChange({ type: "starting" });
     void this.integration
@@ -103,9 +108,16 @@ export class ObsidianSessionManager {
       });
   }
 
-  requestCheck(view: EditorView, intent?: CheckIntent): void {
-    this.activate(view);
-    if (this.active?.view === view) {
+  requestCheck(
+    view: EditorView,
+    documentIdentity: object,
+    intent?: CheckIntent,
+  ): void {
+    this.activate(view, documentIdentity);
+    if (
+      this.active?.view === view &&
+      this.active.documentIdentity === documentIdentity
+    ) {
       this.active.host.requestCheck(intent);
     }
   }

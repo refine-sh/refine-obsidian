@@ -235,6 +235,37 @@ describe("ObsidianWritingHost", () => {
     expect(view.state.facet(EditorView.updateListener)).toHaveLength(initialListenerCount);
   });
 
+  it("reattaches after Obsidian resets one editor view for another document", async () => {
+    const view = createView("first note");
+    const first = new ObsidianWritingHost(view, { sessionId: "first" });
+
+    view.setState(EditorState.create({ doc: "second note" }));
+
+    expect(first.isAttached()).toBe(false);
+    first.close();
+
+    const second = new ObsidianWritingHost(view, { sessionId: "second" });
+    const controller = new AbortController();
+    const observations = second.observe(controller.signal)[Symbol.asyncIterator]();
+
+    expect(second.isAttached()).toBe(true);
+    expect(view.state.facet(EditorView.updateListener)).toHaveLength(1);
+    await expect(observations.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "snapshot",
+        snapshot: {
+          revision: "second:0",
+          sources: [{ text: "second note" }],
+        },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    second.close();
+  });
+
   it("reports a presentation installed for the current document", () => {
     const view = createView("draft");
     const onPresentation = vi.fn();

@@ -61,7 +61,14 @@ export class ObsidianWritingHost {
     if (existing) {
       this.bridge = existing;
       this.view.dispatch({
-        effects: existing.extension.reconfigure(this.activeViewExtension(existing)),
+        effects:
+          existing.extension.get(this.view.state) === undefined
+            ? StateEffect.appendConfig.of(
+                existing.extension.of(this.activeViewExtension(existing)),
+              )
+            : existing.extension.reconfigure(
+                this.activeViewExtension(existing),
+              ),
       });
     } else {
       const bridge: HostViewBridge = {
@@ -204,7 +211,11 @@ export class ObsidianWritingHost {
   }
 
   isAttached(): boolean {
-    return !this.closed && this.bridge.owner === this;
+    return (
+      !this.closed &&
+      this.bridge.owner === this &&
+      this.bridge.extension.get(this.view.state) !== undefined
+    );
   }
 
   close(): void {
@@ -218,7 +229,9 @@ export class ObsidianWritingHost {
     if (this.bridge.owner === this) {
       clearPresentation(this.view);
       this.bridge.owner = undefined;
-      this.view.dispatch({ effects: this.bridge.extension.reconfigure([]) });
+      if (this.bridge.extension.get(this.view.state) !== undefined) {
+        this.view.dispatch({ effects: this.bridge.extension.reconfigure([]) });
+      }
     }
   }
 

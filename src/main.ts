@@ -7,6 +7,7 @@ import {
   Plugin,
   setIcon,
   setTooltip,
+  type TFile,
 } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 
@@ -116,13 +117,9 @@ export default class RefinePlugin extends Plugin {
   }
 
   private synchronizeActiveEditor(): void {
-    const markdown = this.app.workspace.getActiveViewOfType(MarkdownView);
-    const view =
-      markdown?.getMode() === "source"
-        ? this.editorViewIn(markdown.containerEl)
-        : undefined;
-    if (view) {
-      this.sessions?.activate(view);
+    const editor = this.activeEditor();
+    if (editor) {
+      this.sessions?.activate(editor.view, editor.file);
     } else {
       this.sessions?.deactivate();
     }
@@ -132,20 +129,24 @@ export default class RefinePlugin extends Plugin {
     return this.editors?.findIn(container);
   }
 
-  private activeEditorView(): EditorView | undefined {
+  private activeEditor():
+    | { readonly view: EditorView; readonly file: TFile }
+    | undefined {
     const markdown = this.app.workspace.getActiveViewOfType(MarkdownView);
-    return markdown?.getMode() === "source"
-      ? this.editorViewIn(markdown.containerEl)
-      : undefined;
+    if (markdown?.getMode() !== "source" || !markdown.file) {
+      return undefined;
+    }
+    const view = this.editorViewIn(markdown.containerEl);
+    return view ? { view, file: markdown.file } : undefined;
   }
 
   private requestCheckForActiveEditor(): void {
-    const view = this.activeEditorView();
-    if (!view) {
+    const editor = this.activeEditor();
+    if (!editor) {
       new Notice("Open a Markdown note in edit mode to use Refine.");
       return;
     }
-    this.sessions?.requestCheck(view);
+    this.sessions?.requestCheck(editor.view, editor.file);
   }
 
   private openStatusMenu(event: RefineStatusBarActivationEvent): void {
@@ -160,7 +161,7 @@ export default class RefinePlugin extends Plugin {
         item
           .setTitle("Check current note")
           .setIcon("spell-check-2")
-          .setDisabled(this.activeEditorView() === undefined)
+          .setDisabled(this.activeEditor() === undefined)
           .onClick(() => this.requestCheckForActiveEditor()),
       );
       menu.addItem((item) =>

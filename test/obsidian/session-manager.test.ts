@@ -35,12 +35,12 @@ describe("ObsidianSessionManager", () => {
     const first = createView("first note");
     const second = createView("second note");
 
-    manager.activate(first);
+    manager.activate(first, first);
     await vi.waitFor(() => expect(integration.runs).toHaveLength(1));
     const firstRun = integration.runs[0];
     expect(firstRun?.signal.aborted).toBe(false);
 
-    manager.activate(second);
+    manager.activate(second, second);
 
     expect(firstRun?.signal.aborted).toBe(true);
     await vi.waitFor(() => expect(integration.runs).toHaveLength(2));
@@ -50,14 +50,69 @@ describe("ObsidianSessionManager", () => {
     expect(integration.runs[1]?.signal.aborted).toBe(true);
   });
 
+  it("starts a new document run when Obsidian reuses the active editor view", async () => {
+    const states: ObsidianSessionState[] = [];
+    const integration = new RecordingIntegration();
+    const manager = new ObsidianSessionManager({
+      integration,
+      onStateChange: (state) => states.push(state),
+    });
+    const view = createView("first note");
+    const firstDocument = {};
+    const secondDocument = {};
+
+    manager.activate(view, firstDocument);
+    await vi.waitFor(() => expect(integration.runs).toHaveLength(1));
+    await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
+    const firstRun = integration.runs[0];
+    const firstObservation = integration.observations[0];
+    if (firstObservation?.type !== "snapshot") {
+      throw new Error("expected the first document snapshot");
+    }
+    await firstRun?.host.present(
+      completePresentation(firstObservation.snapshot.revision),
+      inertActions(),
+    );
+    expect(states.at(-1)).toMatchObject({
+      type: "presented",
+      snapshot: { suggestions: [{ id: "grammar-1" }] },
+    });
+    expect(view.dom.querySelector(".refine-suggestion")).not.toBeNull();
+
+    manager.activate(view, secondDocument);
+
+    expect(firstRun?.signal.aborted).toBe(true);
+    expect(states.at(-1)).toEqual({ type: "starting" });
+    expect(view.dom.querySelector(".refine-suggestion")).toBeNull();
+    await vi.waitFor(() => expect(integration.runs).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(integration.observations).toContainEqual({
+        type: "snapshot",
+        snapshot: expect.objectContaining({
+          sources: [
+            {
+              sourceId: "document",
+              sourceSyntax: "mixed",
+              text: "first note",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(integration.runs[1]?.signal.aborted).toBe(false);
+    expect(integration.runs[1]?.host).not.toBe(firstRun?.host);
+
+    manager.dispose();
+  });
+
   it("binds an explicit check request to the active editor revision", async () => {
     const integration = new RecordingIntegration();
     const manager = new ObsidianSessionManager({ integration });
     const view = createView("check this note");
-    manager.activate(view);
+    manager.activate(view, view);
     await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
 
-    manager.requestCheck(view);
+    manager.requestCheck(view, view);
 
     await vi.waitFor(() => {
       expect(integration.observations).toContainEqual({
@@ -78,7 +133,7 @@ describe("ObsidianSessionManager", () => {
 
     expect(states).toEqual([{ type: "inactive" }]);
 
-    manager.activate(view);
+    manager.activate(view, view);
     expect(states.at(-1)).toEqual({ type: "starting" });
 
     manager.deactivate();
@@ -93,7 +148,7 @@ describe("ObsidianSessionManager", () => {
       onStateChange: (state) => states.push(state),
     });
     const view = createView("draft");
-    manager.activate(view);
+    manager.activate(view, view);
     await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
     const observation = integration.observations[0];
     if (observation?.type !== "snapshot") {
@@ -117,7 +172,7 @@ describe("ObsidianSessionManager", () => {
       EditorView.updateListener.of(() => {
         if (switchDuringInstallation) {
           switchDuringInstallation = false;
-          manager.activate(second);
+          manager.activate(second, second);
         }
       }),
     ]);
@@ -125,7 +180,7 @@ describe("ObsidianSessionManager", () => {
       integration,
       onStateChange: (state) => states.push(state),
     });
-    manager.activate(first);
+    manager.activate(first, first);
     await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
     const observation = integration.observations[0];
     if (observation?.type !== "snapshot") {
@@ -157,7 +212,8 @@ describe("ObsidianSessionManager", () => {
       onStateChange: (state) => states.push(state),
     });
 
-    manager.activate(createView("draft"));
+    const view = createView("draft");
+    manager.activate(view, view);
 
     await vi.waitFor(() =>
       expect(states.at(-1)).toEqual({ type: "failed", reason: "unavailable" }),
@@ -186,7 +242,8 @@ describe("ObsidianSessionManager", () => {
         onStateChange: (state) => states.push(state),
       });
 
-      manager.activate(createView("draft"));
+      const view = createView("draft");
+      manager.activate(view, view);
 
       await vi.waitFor(() =>
         expect(states.at(-1)).toEqual({
@@ -230,6 +287,33 @@ function pendingPresentation(revision: string): PresentationSnapshot {
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
     state: { type: "pending" },
     suggestions: [],
+  };
+}
+
+function completePresentation(revision: string): PresentationSnapshot {
+  return {
+    documentRevision: revision,
+    presentationRevision: 1,
+    appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    state: { type: "complete", coverage: "full" },
+    suggestions: [
+      {
+        id: "grammar-1",
+        sourceId: "document",
+        kind: "grammar",
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "ltr",
+          checkModelDisplayName: "On-Device (Gemma)",
+        },
+        highlightRanges: [{ location: 0, length: 5 }],
+        diff: [
+          { kind: "delete", text: "first" },
+          { kind: "insert", text: "second" },
+        ],
+        availableActions: ["apply"],
+      },
+    ],
   };
 }
 
