@@ -172,8 +172,14 @@ describe("Refine status bar", () => {
       null,
     ],
     [
-      { type: "incompatible" } as const,
-      "Refine: Incompatible protocol version. Update Refine and the Obsidian plugin. Open Refine menu",
+      { type: "incompatible", requiredUpdate: "server" } as const,
+      "Refine: Update the Refine app to continue. Open Refine menu",
+      "triangle-alert",
+      null,
+    ],
+    [
+      { type: "incompatible", requiredUpdate: "client" } as const,
+      "Refine: Update the Refine Obsidian plugin to continue. Open Refine menu",
       "triangle-alert",
       null,
     ],
@@ -253,8 +259,20 @@ describe("Refine status bar", () => {
       { type: "error" } as const,
     ],
     [
-      { type: "failed", reason: "incompatibleProtocol" } as const,
-      { type: "incompatible" } as const,
+      {
+        type: "failed",
+        reason: "incompatibleProtocol",
+        requiredUpdate: "server",
+      } as const,
+      { type: "incompatible", requiredUpdate: "server" } as const,
+    ],
+    [
+      {
+        type: "failed",
+        reason: "incompatibleProtocol",
+        requiredUpdate: "client",
+      } as const,
+      { type: "incompatible", requiredUpdate: "client" } as const,
     ],
     [
       presented({ type: "pending" }),

@@ -170,27 +170,34 @@ describe("ObsidianSessionManager", () => {
     manager.dispose();
   });
 
-  it("reports an incompatible protocol failure explicitly", async () => {
-    const states: ObsidianSessionState[] = [];
-    const manager = new ObsidianSessionManager({
-      integration: {
-        run: async () => {
-          throw new IncompatibleProtocolError("Refine protocol 1 is incompatible with protocol 2");
+  it.each(["server", "client"] as const)(
+    "reports an incompatible protocol failure requiring an update to %s",
+    async (requiredUpdate) => {
+      const states: ObsidianSessionState[] = [];
+      const manager = new ObsidianSessionManager({
+        integration: {
+          run: async () => {
+            throw new IncompatibleProtocolError(
+              "Refine protocol 1 is incompatible with protocol 2",
+              requiredUpdate,
+            );
+          },
         },
-      },
-      onStateChange: (state) => states.push(state),
-    });
+        onStateChange: (state) => states.push(state),
+      });
 
-    manager.activate(createView("draft"));
+      manager.activate(createView("draft"));
 
-    await vi.waitFor(() =>
-      expect(states.at(-1)).toEqual({
-        type: "failed",
-        reason: "incompatibleProtocol",
-      }),
-    );
-    manager.dispose();
-  });
+      await vi.waitFor(() =>
+        expect(states.at(-1)).toEqual({
+          type: "failed",
+          reason: "incompatibleProtocol",
+          requiredUpdate,
+        }),
+      );
+      manager.dispose();
+    },
+  );
 
   function createView(doc: string, extensions: readonly Extension[] = []): EditorView {
     const parent = document.createElement("div");

@@ -39,6 +39,15 @@ export interface WelcomeFrame {
   readonly capabilities: readonly string[];
 }
 
+export interface HandshakeRejectedFrame {
+  readonly type: "rejected";
+  readonly reason: "incompatibleProtocol";
+  readonly protocol: {
+    readonly major: number;
+    readonly minor: number;
+  };
+}
+
 export type ClientCommand =
   | { readonly type: "openDocument"; readonly snapshot: DocumentSnapshot }
   | { readonly type: "replaceDocument"; readonly snapshot: DocumentSnapshot }

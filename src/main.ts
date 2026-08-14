@@ -11,6 +11,7 @@ import {
 import type { EditorView } from "@codemirror/view";
 
 import { createRefineIntegration } from "./integration/refine-integration";
+import { incompatibleProtocolNotice } from "./obsidian/compatibility";
 import { ObsidianEditorRegistry } from "./obsidian/editor-registry";
 import { ObsidianSessionManager } from "./obsidian/session-manager";
 import {
@@ -73,7 +74,7 @@ export default class RefinePlugin extends Plugin {
         console.error("Refine integration stopped");
         new Notice(
           error instanceof IncompatibleProtocolError
-            ? "Refine and the Obsidian plugin use incompatible protocol versions. Update both and try again."
+            ? incompatibleProtocolNotice(error.requiredUpdate)
             : "Refine is unavailable. Make sure the Refine app is running.",
         );
       },

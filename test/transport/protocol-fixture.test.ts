@@ -11,6 +11,7 @@ import {
 } from "../../src/transport/refine-transport";
 import type {
   ClientCommandEnvelope,
+  HandshakeRejectedFrame,
   HelloFrame,
   ServerEventEnvelope,
   WelcomeFrame,
@@ -18,6 +19,7 @@ import type {
 
 interface ProtocolFixture {
   readonly hello: HelloFrame;
+  readonly rejection: HandshakeRejectedFrame;
   readonly welcome: WelcomeFrame;
   readonly openDocument: ClientCommandEnvelope;
   readonly presentation: ServerEventEnvelope;
@@ -30,6 +32,11 @@ interface ProtocolFixture {
 describe("integration protocol V2 golden transcript", () => {
   it("is consumed without translation by the TypeScript transport", async () => {
     const fixture = await loadFixture();
+    expect(fixture.rejection).toEqual({
+      type: "rejected",
+      reason: "incompatibleProtocol",
+      protocol: { major: 2, minor: 1 },
+    });
     expect(fixture.presentation).toMatchObject({
       event: {
         type: "presentationContentReplaced",
@@ -84,6 +91,7 @@ describe("integration protocol V2 golden transcript", () => {
         launchToken: fixture.hello.launchToken,
         serverEpoch: fixture.welcome.serverEpoch,
         protocolMajor: 2,
+        protocolMinor: 1,
         pid: 123,
       }),
     };

@@ -228,12 +228,44 @@ describe("Refine transport handshake", () => {
     await expect(connection).rejects.toMatchObject({ recoverability: "recoverable" });
   });
 
-  it("reports a protocol 2.0 welcome as explicitly incompatible", async () => {
+  it.each([
+    [{ major: 2, minor: 0 }, "server"],
+    [{ major: 2, minor: 2 }, "client"],
+  ] as const)(
+    "reports which component must be updated for welcome protocol %s",
+    async (protocol, requiredUpdate) => {
+      const frames = new AsyncQueue<unknown>();
+      const connector = connectionConnector(frames, [], () => {
+        frames.push({
+          type: "welcome",
+          protocol,
+          serverEpoch: "epoch-1",
+          runResumed: false,
+          limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+          capabilities: [],
+        });
+      });
+      const transport = new RefineTransport({
+        client: { id: "test-client", version: "0.1.0", host: "test-host" },
+        connector,
+        endpointLocator: endpointLocator(),
+      });
+
+      const connection = transport.connect(new AbortController().signal);
+      await expect(connection).rejects.toThrow(IncompatibleProtocolError);
+      await expect(connection).rejects.toMatchObject({
+        recoverability: "fatal",
+        requiredUpdate,
+      });
+    },
+  );
+
+  it("rejects out-of-range protocol components in a welcome", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 0 },
+        protocol: { major: 0x1_0000, minor: 0 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -246,10 +278,157 @@ describe("Refine transport handshake", () => {
       endpointLocator: endpointLocator(),
     });
 
-    const connection = transport.connect(new AbortController().signal);
-    await expect(connection).rejects.toThrow(IncompatibleProtocolError);
-    await expect(connection).rejects.toMatchObject({ recoverability: "fatal" });
+    const error = await transport
+      .connect(new AbortController().signal)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(TransportProtocolError);
+    expect(error).not.toBeInstanceOf(IncompatibleProtocolError);
+    expect(error).toMatchObject({ message: "Malformed welcome protocol version" });
   });
+
+  it.each([
+    [{ major: 2, minor: 0 }, "server"],
+    [{ major: 2, minor: 2 }, "client"],
+  ] as const)(
+    "reports which component must be updated for a rejected protocol %s",
+    async (protocol, requiredUpdate) => {
+      const frames = new AsyncQueue<unknown>();
+      const connector = connectionConnector(frames, [], () => {
+        frames.push({
+          type: "rejected",
+          reason: "incompatibleProtocol",
+          protocol,
+        });
+      });
+      const transport = new RefineTransport({
+        client: { id: "test-client", version: "0.1.0", host: "test-host" },
+        connector,
+        endpointLocator: endpointLocator(),
+      });
+
+      await expect(
+        transport.connect(new AbortController().signal),
+      ).rejects.toMatchObject({
+        recoverability: "fatal",
+        requiredUpdate,
+      });
+    },
+  );
+
+  it("rejects out-of-range protocol components in a handshake rejection", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const connector = connectionConnector(frames, [], () => {
+      frames.push({
+        type: "rejected",
+        reason: "incompatibleProtocol",
+        protocol: { major: 0x1_0000, minor: 0 },
+      });
+    });
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    });
+
+    const error = await transport
+      .connect(new AbortController().signal)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(TransportProtocolError);
+    expect(error).not.toBeInstanceOf(IncompatibleProtocolError);
+    expect(error).toMatchObject({ message: "Malformed handshake rejection" });
+  });
+
+  it("keeps a legacy pre-welcome close as a generic connection failure", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const connector = connectionConnector(frames, [], () => frames.close());
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: {
+        locate: async () => ({
+          version: 1,
+          socketPath: "/private/tmp/refine-1/integration.sock",
+          launchToken: "secret-1",
+          serverEpoch: "epoch-1",
+          protocolMajor: 2,
+          pid: 123,
+        }),
+      },
+    });
+
+    const error = await transport
+      .connect(new AbortController().signal)
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(TransportProtocolError);
+    expect(error).not.toBeInstanceOf(IncompatibleProtocolError);
+  });
+
+  it("accepts a compatible welcome from a legacy same-major descriptor", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const connector = connectionConnector(frames, [], () => {
+      frames.push({
+        type: "welcome",
+        protocol: { major: 2, minor: 1 },
+        serverEpoch: "epoch-1",
+        runResumed: false,
+        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        capabilities: [],
+      });
+    });
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: {
+        locate: async () => ({
+          version: 1,
+          socketPath: "/private/tmp/refine-1/integration.sock",
+          launchToken: "secret-1",
+          serverEpoch: "epoch-1",
+          protocolMajor: 2,
+          pid: 123,
+        }),
+      },
+    });
+
+    const session = await transport.connect(new AbortController().signal);
+
+    expect(session.serverEpoch).toBe("epoch-1");
+    await session.close();
+  });
+
+  it.each([
+    [{ major: 1, minor: 0 }, "server"],
+    [{ major: 3, minor: 0 }, "client"],
+  ] as const)(
+    "reports which component must be updated from endpoint protocol %s",
+    async (receivedProtocol, requiredUpdate) => {
+      const connector: FrameConnector = {
+        connect: vi.fn(async () => {
+          throw new Error("should not connect");
+        }),
+      };
+      const transport = new RefineTransport({
+        client: { id: "test-client", version: "0.1.0", host: "test-host" },
+        connector,
+        endpointLocator: {
+          locate: async () => {
+            throw new EndpointProtocolVersionError(receivedProtocol);
+          },
+        },
+      });
+
+      await expect(
+        transport.connect(new AbortController().signal),
+      ).rejects.toMatchObject({
+        recoverability: "fatal",
+        requiredUpdate,
+      });
+      expect(connector.connect).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed when presentation appearance contains an unknown field", async () => {
     const frames = new AsyncQueue<unknown>();
@@ -411,14 +590,17 @@ describe("Refine transport handshake", () => {
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
       endpointLocator: {
         locate: async () => {
-          throw new EndpointProtocolVersionError(1);
+          throw new EndpointProtocolVersionError({ major: 1, minor: 0 });
         },
       },
     });
 
     const connection = transport.connect(new AbortController().signal);
     await expect(connection).rejects.toThrow(IncompatibleProtocolError);
-    await expect(connection).rejects.toMatchObject({ recoverability: "fatal" });
+    await expect(connection).rejects.toMatchObject({
+      recoverability: "fatal",
+      requiredUpdate: "server",
+    });
   });
 
   it("serializes concurrent command writes in sequence order", async () => {
@@ -530,6 +712,7 @@ function endpointLocator(): EndpointLocator {
       launchToken: "secret-1",
       serverEpoch: "epoch-1",
       protocolMajor: 2,
+      protocolMinor: 1,
       pid: 123,
     }),
   };

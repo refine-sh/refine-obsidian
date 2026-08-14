@@ -17,6 +17,7 @@ import {
   isActionRejectionReason,
   type ClientCommand,
   type ClientCommandEnvelope,
+  type HandshakeRejectedFrame,
   type HelloFrame,
   type IntegrationClientIdentity,
   type PresentationContent,
@@ -75,8 +76,14 @@ export class EndpointReplacedError extends TransportProtocolError {
   }
 }
 
+export type RequiredCompatibilityUpdate = "server" | "client";
+
 export class IncompatibleProtocolError extends TransportProtocolError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    readonly requiredUpdate: RequiredCompatibilityUpdate,
+    options?: ErrorOptions,
+  ) {
     super(message, "fatal", options);
     this.name = "IncompatibleProtocolError";
   }
@@ -102,7 +109,11 @@ export class RefineTransport {
       endpoint = await this.endpointLocator.locate();
     } catch (error) {
       if (error instanceof EndpointProtocolVersionError) {
-        throw new IncompatibleProtocolError(error.message, { cause: error });
+        throw new IncompatibleProtocolError(
+          error.message,
+          requiredUpdateForServerProtocol(error.receivedProtocol),
+          { cause: error },
+        );
       }
       if (error instanceof EndpointDescriptorError) {
         throw new EngineConnectionError(
@@ -130,7 +141,7 @@ export class RefineTransport {
       if (first.done) {
         throw new TransportProtocolError("Refine closed the connection before welcome");
       }
-      const welcome = decodeWelcome(first.value);
+      const welcome = decodeHandshakeResponse(first.value);
       if (welcome.serverEpoch !== endpoint.serverEpoch) {
         throw new EndpointReplacedError();
       }
@@ -216,16 +227,50 @@ class Session implements RefineTransportSession {
   }
 }
 
+function decodeHandshakeResponse(value: unknown): WelcomeFrame {
+  const object = requireRecord(value, "handshake response");
+  if (object.type === "rejected") {
+    const rejection = decodeHandshakeRejection(object);
+    throw new IncompatibleProtocolError(
+      `Refine protocol ${rejection.protocol.major}.${rejection.protocol.minor} is incompatible with protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}`,
+      requiredUpdateForServerProtocol(rejection.protocol),
+    );
+  }
+  return decodeWelcome(object);
+}
+
+function decodeHandshakeRejection(
+  object: Record<string, unknown>,
+): HandshakeRejectedFrame {
+  const protocol = requireRecord(object.protocol, "rejected.protocol");
+  if (
+    object.reason !== "incompatibleProtocol" ||
+    !isUInt16(protocol.major) ||
+    !isUInt16(protocol.minor)
+  ) {
+    throw new TransportProtocolError("Malformed handshake rejection");
+  }
+  return {
+    type: "rejected",
+    reason: "incompatibleProtocol",
+    protocol: { major: protocol.major, minor: protocol.minor },
+  };
+}
+
 function decodeWelcome(value: unknown): WelcomeFrame {
   const object = requireRecord(value, "welcome");
   const protocol = requireRecord(object.protocol, "welcome.protocol");
   const limits = requireRecord(object.limits, "welcome.limits");
-  if (!isUInt32(protocol.major) || !isUInt32(protocol.minor)) {
+  if (!isUInt16(protocol.major) || !isUInt16(protocol.minor)) {
     throw new TransportProtocolError("Malformed welcome protocol version");
   }
   if (protocol.major !== PROTOCOL_MAJOR || protocol.minor !== PROTOCOL_MINOR) {
     throw new IncompatibleProtocolError(
       `Refine protocol ${protocol.major}.${protocol.minor} is incompatible with protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}`,
+      requiredUpdateForServerProtocol({
+        major: protocol.major,
+        minor: protocol.minor,
+      }),
     );
   }
   if (
@@ -247,6 +292,19 @@ function decodeWelcome(value: unknown): WelcomeFrame {
     limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
     capabilities: object.capabilities,
   };
+}
+
+function requiredUpdateForServerProtocol(protocol: {
+  readonly major: number;
+  readonly minor: number;
+}): RequiredCompatibilityUpdate {
+  if (
+    protocol.major > PROTOCOL_MAJOR ||
+    (protocol.major === PROTOCOL_MAJOR && protocol.minor > PROTOCOL_MINOR)
+  ) {
+    return "client";
+  }
+  return "server";
 }
 
 function decodeEventEnvelope(value: unknown): ServerEventEnvelope {
@@ -591,6 +649,10 @@ function isStringArray(value: unknown): value is string[] {
 
 function isUInt32(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff_ffff;
+}
+
+function isUInt16(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff;
 }
 
 function isPresentationStatus(

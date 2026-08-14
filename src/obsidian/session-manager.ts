@@ -5,7 +5,10 @@ import type {
   PresentationSnapshot,
   RefineIntegration,
 } from "../integration/types";
-import { IncompatibleProtocolError } from "../transport/refine-transport";
+import {
+  IncompatibleProtocolError,
+  type RequiredCompatibilityUpdate,
+} from "../transport/refine-transport";
 import { ObsidianWritingHost } from "./host";
 import type { ExplanationRenderer } from "./presentation";
 
@@ -15,7 +18,12 @@ export type ObsidianSessionState =
   | { readonly type: "presented"; readonly snapshot: PresentationSnapshot }
   | {
       readonly type: "failed";
-      readonly reason: "unavailable" | "incompatibleProtocol";
+      readonly reason: "unavailable";
+    }
+  | {
+      readonly type: "failed";
+      readonly reason: "incompatibleProtocol";
+      readonly requiredUpdate: RequiredCompatibilityUpdate;
     };
 
 export interface ObsidianSessionManagerOptions {
@@ -75,12 +83,15 @@ export class ObsidianSessionManager {
       .run({ host, signal: controller.signal })
       .catch((error: unknown) => {
         if (!controller.signal.aborted && this.active === session) {
-          this.onStateChange({
-            type: "failed",
-            reason: error instanceof IncompatibleProtocolError
-              ? "incompatibleProtocol"
-              : "unavailable",
-          });
+          this.onStateChange(
+            error instanceof IncompatibleProtocolError
+              ? {
+                  type: "failed",
+                  reason: "incompatibleProtocol",
+                  requiredUpdate: error.requiredUpdate,
+                }
+              : { type: "failed", reason: "unavailable" },
+          );
           this.onError(error);
         }
       })

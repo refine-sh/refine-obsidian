@@ -11,6 +11,11 @@
     "launchToken": "token-fixture",
     "capabilities": []
   },
+  "rejection": {
+    "type": "rejected",
+    "reason": "incompatibleProtocol",
+    "protocol": { "major": 2, "minor": 1 }
+  },
   "welcome": {
     "type": "welcome",
     "protocol": { "major": 2, "minor": 1 },

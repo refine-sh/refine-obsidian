@@ -22,6 +22,7 @@ describe("Refine endpoint discovery", () => {
       launchToken: "per-launch-secret",
       serverEpoch: "epoch-123",
       protocolMajor: 2,
+      protocolMinor: 1,
       pid: 1234,
     });
   });
@@ -73,6 +74,35 @@ describe("Refine endpoint discovery", () => {
     });
 
     await expect(locator.locate()).rejects.toThrow(EndpointProtocolVersionError);
+    await expect(locator.locate()).rejects.toMatchObject({
+      receivedProtocol: { major: 1, minor: 0 },
+    });
+  });
+
+  it("allows a same-major legacy descriptor to negotiate its minor version", async () => {
+    const locator = new FileEndpointLocator({
+      descriptorPath: "/Users/test/endpoint.json",
+      currentUid: 501,
+      fileSystem: endpointFileSystem({
+        descriptorText: JSON.stringify({
+          version: 1,
+          socketPath: "/private/tmp/refine-123/integration.sock",
+          launchToken: "per-launch-secret",
+          serverEpoch: "epoch-123",
+          protocolMajor: 2,
+          pid: 1234,
+        }),
+      }),
+    });
+
+    await expect(locator.locate()).resolves.toEqual({
+      version: 1,
+      socketPath: "/private/tmp/refine-123/integration.sock",
+      launchToken: "per-launch-secret",
+      serverEpoch: "epoch-123",
+      protocolMajor: 2,
+      pid: 1234,
+    });
   });
 });
 
@@ -91,6 +121,7 @@ function endpointFileSystem(
       launchToken: "per-launch-secret",
       serverEpoch: "epoch-123",
       protocolMajor: 2,
+      protocolMinor: 1,
       pid: 1234,
     });
   return {

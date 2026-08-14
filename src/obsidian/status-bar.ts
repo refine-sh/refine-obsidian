@@ -1,3 +1,5 @@
+import type { RequiredCompatibilityUpdate } from "../transport/refine-transport";
+import { incompatibleProtocolStatus } from "./compatibility";
 import type { ObsidianSessionState } from "./session-manager";
 
 export type RefineStatusBarState =
@@ -9,7 +11,10 @@ export type RefineStatusBarState =
   | { readonly type: "suggestions"; readonly count: number }
   | { readonly type: "partial"; readonly count: number }
   | { readonly type: "checkFailed" }
-  | { readonly type: "incompatible" }
+  | {
+      readonly type: "incompatible";
+      readonly requiredUpdate: RequiredCompatibilityUpdate;
+    }
   | { readonly type: "error" };
 
 export type RefineStatusBarActivationEvent = MouseEvent | KeyboardEvent;
@@ -129,7 +134,7 @@ export function createRefineStatusBarController(
           element,
           renderIcon,
           "incompatible",
-          "Refine: Incompatible protocol version. Update Refine and the Obsidian plugin. Open Refine menu",
+          incompatibleProtocolStatus(state.requiredUpdate),
           "triangle-alert",
         );
       }
@@ -152,7 +157,7 @@ export function statusBarStateForSession(
   }
   if (session.type === "failed") {
     return session.reason === "incompatibleProtocol"
-      ? { type: "incompatible" }
+      ? { type: "incompatible", requiredUpdate: session.requiredUpdate }
       : { type: "error" };
   }
 

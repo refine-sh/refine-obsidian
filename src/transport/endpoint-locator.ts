@@ -2,13 +2,21 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
+import { PROTOCOL_MAJOR, PROTOCOL_MINOR } from "./wire";
+
 export interface EndpointDescriptor {
   readonly version: 1;
   readonly socketPath: string;
   readonly launchToken: string;
   readonly serverEpoch: string;
-  readonly protocolMajor: 2;
+  readonly protocolMajor: typeof PROTOCOL_MAJOR;
+  readonly protocolMinor?: typeof PROTOCOL_MINOR;
   readonly pid: number;
+}
+
+export interface EndpointProtocolVersion {
+  readonly major: number;
+  readonly minor: number;
 }
 
 export type EndpointEntryKind = "file" | "directory" | "socket" | "other";
@@ -43,9 +51,9 @@ export class EndpointSecurityError extends EndpointDescriptorError {
 }
 
 export class EndpointProtocolVersionError extends EndpointDescriptorError {
-  constructor(readonly receivedProtocolMajor: unknown) {
+  constructor(readonly receivedProtocol: EndpointProtocolVersion) {
     super(
-      `Endpoint protocolMajor ${String(receivedProtocolMajor)} is incompatible; expected 2`,
+      `Refine protocol ${receivedProtocol.major}.${receivedProtocol.minor} is incompatible with protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}`,
     );
     this.name = "EndpointProtocolVersionError";
   }
@@ -147,8 +155,24 @@ export function parseEndpointDescriptor(text: string): EndpointDescriptor {
   if (typeof value.serverEpoch !== "string" || value.serverEpoch.length === 0) {
     throw new EndpointDescriptorError("Endpoint serverEpoch must be a nonempty string");
   }
-  if (value.protocolMajor !== 2) {
-    throw new EndpointProtocolVersionError(value.protocolMajor);
+  const protocolMajor = requireProtocolComponent(
+    value.protocolMajor,
+    "protocolMajor",
+  );
+  // Existing protocol 2.x descriptors predate protocolMinor. Preserve that
+  // absence so the transport can negotiate with a compatible legacy server;
+  // without a typed response, a pre-welcome close remains a generic failure.
+  const protocolMinor = value.protocolMinor === undefined
+    ? undefined
+    : requireProtocolComponent(value.protocolMinor, "protocolMinor");
+  if (
+    protocolMajor !== PROTOCOL_MAJOR ||
+    (protocolMinor !== undefined && protocolMinor !== PROTOCOL_MINOR)
+  ) {
+    throw new EndpointProtocolVersionError({
+      major: protocolMajor,
+      minor: protocolMinor ?? 0,
+    });
   }
   if (!Number.isSafeInteger(value.pid) || (value.pid as number) <= 0) {
     throw new EndpointDescriptorError("Endpoint pid must be a positive integer");
@@ -159,9 +183,21 @@ export function parseEndpointDescriptor(text: string): EndpointDescriptor {
     socketPath: value.socketPath,
     launchToken: value.launchToken,
     serverEpoch: value.serverEpoch,
-    protocolMajor: 2,
+    protocolMajor: PROTOCOL_MAJOR,
+    ...(protocolMinor === undefined
+      ? {}
+      : { protocolMinor: PROTOCOL_MINOR }),
     pid: value.pid as number,
   };
+}
+
+function requireProtocolComponent(value: unknown, field: string): number {
+  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 0xffff) {
+    throw new EndpointDescriptorError(
+      `Endpoint ${field} must be an unsigned 16-bit integer`,
+    );
+  }
+  return value as number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
