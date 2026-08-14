@@ -539,6 +539,97 @@ describe("Obsidian presentation", () => {
     }
   });
 
+  it("restarts the opening delay until the pointer rests on the suggestion", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost("[create an link](URL)or", "hover-rest");
+      await host.present(presentation("hover-rest:0"), actions());
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+      prepareHoverGeometry(view, 9);
+
+      movePointer(highlight);
+      await vi.advanceTimersByTimeAsync(150);
+      movePointer(highlight);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(document.querySelector(".refine-tooltip--hover")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("prefers an above, right-aligned hover card when the viewport has room", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(1000);
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(800);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("refine-tooltip") ? 320 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("refine-tooltip") ? 100 : 0;
+    });
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("cm-scroller")) {
+        return new DOMRect(0, 0, 1000, 800);
+      }
+      if (
+        this.classList.contains("refine-tooltip")
+      ) {
+        return new DOMRect(0, 0, 320, 100);
+      }
+      return originalBounds.call(this);
+    });
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "preferred-hover-position",
+      );
+      await host.present(presentation("preferred-hover-position:0"), actions());
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+      vi.spyOn(view, "inView", "get").mockReturnValue(true);
+      vi.spyOn(view, "posAtCoords").mockReturnValue(9);
+      const coordinates = vi.spyOn(view, "coordsAtPos").mockImplementation(
+        (position) => position === 10
+          ? { left: 496, right: 500, top: 500, bottom: 520 }
+          : { left: 296, right: 300, top: 500, bottom: 520 },
+      );
+
+      highlight?.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 298,
+          clientY: 510,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(320);
+
+      const card = document.querySelector<HTMLElement>(
+        ".refine-tooltip--hover",
+      );
+      expect({
+        placement: card?.dataset.refinePlacement,
+        left: card?.style.left,
+        top: card?.style.top,
+      }).toEqual({
+        placement: "top-end",
+        left: "180px",
+        top: "396px",
+      });
+      expect(coordinates).toHaveBeenCalledWith(10, -1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a space-only diff while making it visible and accessible", async () => {
     vi.useFakeTimers();
     try {
@@ -597,7 +688,7 @@ describe("Obsidian presentation", () => {
     }
   });
 
-  it("removes CodeMirror's square shell around a Refine hover card", async () => {
+  it("portals a hover card without CodeMirror's tooltip shell", async () => {
     vi.useFakeTimers();
     const style = document.createElement("style");
     style.textContent = readFileSync(resolve(import.meta.dirname, "../../styles.css"), "utf8");
@@ -609,17 +700,10 @@ describe("Obsidian presentation", () => {
 
       await hover(view, highlight, 21);
 
-      const shell = document.querySelector<HTMLElement>(
-        ".cm-tooltip.refine-tooltip-shell",
-      );
-      expect(shell).not.toBeNull();
-      expect(getComputedStyle(shell!).borderTopWidth).toBe("0px");
-      expect(getComputedStyle(shell!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-
-      const otherSection = document.createElement("div");
-      otherSection.className = "cm-tooltip-section";
-      shell?.append(otherSection);
-      expect(getComputedStyle(shell!).borderTopWidth).not.toBe("0px");
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      expect(card).not.toBeNull();
+      expect(card?.parentElement).toBe(document.body);
+      expect(card?.closest(".cm-tooltip")).toBeNull();
     } finally {
       style.remove();
       vi.useRealTimers();
@@ -655,7 +739,6 @@ describe("Obsidian presentation", () => {
       await hover(view, highlight, 9);
 
       const card = document.querySelector<HTMLElement>(".refine-tooltip");
-      const shell = card?.parentElement;
       const diff = document.querySelector<HTMLElement>(".refine-tooltip__diff");
       const cardStyle = getComputedStyle(card!);
       const tooltipRule = Array.from(style.sheet?.cssRules ?? []).find(
@@ -668,8 +751,8 @@ describe("Obsidian presentation", () => {
       expect(cardStyle.minInlineSize).toBe("320px");
       expect(cardStyle.maxInlineSize).toBe("448px");
       expect(view.dom.parentElement?.style.overflow).toBe("hidden");
-      expect(shell?.closest(".cm-editor")).toBeNull();
-      expect(shell?.parentElement?.parentElement).toBe(document.body);
+      expect(card?.closest(".cm-editor")).toBeNull();
+      expect(card?.parentElement).toBe(document.body);
       expect(tooltipRule?.style.minInlineSize).toMatch(/min\(20rem,.*100vw/);
       expect(tooltipRule?.style.minInlineSize).toContain("-2rem");
       expect(tooltipRule?.style.maxInlineSize).toMatch(/min\(28rem,.*100vw/);
@@ -1003,6 +1086,127 @@ describe("Obsidian presentation", () => {
       vi.runAllTimers();
       expect(document.querySelector(".refine-tooltip")).toBe(card);
 
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the card open through the pointer bridge and closes after moving away", async () => {
+    vi.useFakeTimers();
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.classList.contains("refine-tooltip")) {
+        return new DOMRect(-20, 60, 320, 100);
+      }
+      return originalBounds.call(this);
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("refine-tooltip") ? 320 : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("refine-tooltip") ? 100 : 0;
+    });
+    try {
+      const { host, view } = createHost("[create an link](URL)or", "hover-bridge");
+      await host.present(presentation("hover-bridge:0"), actions());
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+      vi.spyOn(view, "posAtCoords").mockReturnValue(9);
+      vi.spyOn(view, "coordsAtPos").mockReturnValue({
+        left: 296,
+        right: 300,
+        top: 200,
+        bottom: 220,
+      });
+      highlight?.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 298,
+          clientY: 210,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(220);
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      expect(card).not.toBeNull();
+
+      view.contentDOM.dispatchEvent(
+        new MouseEvent("mouseleave", {
+          clientX: 298,
+          clientY: 200,
+          relatedTarget: document.body,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(80);
+      document.body.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 280,
+          clientY: 180,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(80);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      card?.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 280,
+          clientY: 120,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(200);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      card?.dispatchEvent(
+        new MouseEvent("mouseleave", {
+          clientX: 280,
+          clientY: 160,
+          relatedTarget: document.body,
+        }),
+      );
+      document.body.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 800,
+          clientY: 700,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(120);
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a hover card open while focus is inside its actions", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost("[create an link](URL)or", "hover-focus");
+      await host.present(presentation("hover-focus:0"), actions());
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+      await hover(view, highlight, 9);
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      const button = card?.querySelector<HTMLButtonElement>("button");
+      button?.focus();
+
+      view.contentDOM.dispatchEvent(
+        new MouseEvent("mouseleave", {
+          clientX: 10,
+          clientY: 10,
+          relatedTarget: document.body,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      view.focus();
+      await vi.advanceTimersByTimeAsync(120);
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -1368,9 +1572,13 @@ describe("Obsidian presentation", () => {
     );
   });
 
-  it("clamps a keyboard-opened card inside the viewport gutter", async () => {
+  it("prefers an above, right-aligned keyboard card and clamps viewport fallbacks", async () => {
     let viewportWidth = 960;
+    let viewportHeight = 600;
     let cardWidth = 320;
+    let cardHeight = 200;
+    let triggerLeft = 500;
+    let triggerTop = 400;
     let resizeObserverCallback: ResizeObserverCallback | undefined;
     const previousResizeObserver = Object.getOwnPropertyDescriptor(window, "ResizeObserver");
     class TestResizeObserver {
@@ -1389,19 +1597,32 @@ describe("Obsidian presentation", () => {
     vi.spyOn(document.documentElement, "clientWidth", "get").mockImplementation(
       () => viewportWidth,
     );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockImplementation(
+      () => viewportHeight,
+    );
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("refine-tooltip") ? cardWidth : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.classList.contains("refine-tooltip") ? cardHeight : 0;
+    });
     const originalBounds = HTMLElement.prototype.getBoundingClientRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement,
     ) {
       if (this.classList.contains("refine-suggestion")) {
-        return new DOMRect(920, 100, 40, 20);
+        return new DOMRect(triggerLeft, triggerTop, 40, 20);
       }
       if (this.classList.contains("refine-tooltip--manual")) {
         return new DOMRect(
           Number.parseFloat(this.style.left) || 0,
           Number.parseFloat(this.style.top) || 0,
           cardWidth,
-          200,
+          cardHeight,
         );
       }
       return originalBounds.call(this);
@@ -1414,17 +1635,33 @@ describe("Obsidian presentation", () => {
       highlight?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
       const card = document.querySelector<HTMLElement>(".refine-tooltip--manual");
-      expect(card?.style.left).toBe("624px");
-      expect(card?.style.top).toBe("124px");
+      await vi.waitFor(() => {
+        expect(card?.style.left).toBe("220px");
+        expect(card?.style.top).toBe("196px");
+      });
+
+      triggerTop = 100;
+      resizeObserverCallback?.([], {} as ResizeObserver);
+      await vi.waitFor(() => expect(card?.style.top).toBe("124px"));
+
+      triggerLeft = 920;
+      resizeObserverCallback?.([], {} as ResizeObserver);
+      await vi.waitFor(() => expect(card?.style.left).toBe("624px"));
 
       cardWidth = 448;
       resizeObserverCallback?.([], {} as ResizeObserver);
-      expect(card?.style.left).toBe("496px");
+      await vi.waitFor(() => expect(card?.style.left).toBe("496px"));
 
       cardWidth = 320;
       viewportWidth = 400;
       window.dispatchEvent(new Event("resize"));
-      expect(card?.style.left).toBe("64px");
+      await vi.waitFor(() => expect(card?.style.left).toBe("64px"));
+
+      triggerTop = 560;
+      viewportHeight = 600;
+      cardHeight = 200;
+      resizeObserverCallback?.([], {} as ResizeObserver);
+      await vi.waitFor(() => expect(card?.style.top).toBe("356px"));
     } finally {
       if (previousResizeObserver) {
         Object.defineProperty(window, "ResizeObserver", previousResizeObserver);

@@ -1,4 +1,13 @@
 import {
+  autoUpdate,
+  computePosition,
+  flip,
+  offset,
+  shift,
+  type ReferenceElement,
+  type VirtualElement,
+} from "@floating-ui/dom";
+import {
   StateEffect,
   StateField,
   type Extension,
@@ -7,11 +16,9 @@ import {
 import {
   Decoration,
   type DecorationSet,
+  Direction,
   EditorView,
-  closeHoverTooltips,
-  hoverTooltip,
   type PluginValue,
-  tooltips,
   ViewPlugin,
   type ViewUpdate,
   WidgetType,
@@ -41,8 +48,8 @@ interface InstalledPresentation {
 
 interface SuggestionHit {
   readonly suggestionId: string;
-  readonly anchorX: number;
-  readonly anchorY: number;
+  readonly match?: SuggestionRangeMatch;
+  readonly trigger?: HTMLElement;
 }
 
 interface SuggestionRangeMatch {
@@ -51,8 +58,29 @@ interface SuggestionRangeMatch {
   readonly to: number;
 }
 
-const suggestionHoverTimeMs = 200;
-const manualPopoverViewportGutterPx = 16;
+interface HoverCandidate {
+  readonly match: SuggestionRangeMatch;
+  readonly presentationRevision: number;
+}
+
+interface PointerPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface HoverBridge {
+  readonly origin: PointerPoint;
+  previous: PointerPoint;
+  readonly target: "card" | "suggestion";
+}
+
+type SuggestionCardMode = "hover" | "manual";
+
+const suggestionHoverOpenDelayMs = 200;
+const suggestionHoverCloseDelayMs = 120;
+const suggestionHoverBridgeBufferPx = 6;
+const suggestionCardViewportGutterPx = 16;
+const suggestionCardGapPx = 4;
 
 const replacePresentation = StateEffect.define<InstalledPresentation | undefined>();
 
@@ -108,10 +136,14 @@ class InsertionAnchorWidget extends WidgetType {
 
 class PresentationPopover implements PluginValue {
   private element: HTMLElement | undefined;
-  private manualAnchorX: number | undefined;
-  private manualAnchorY: number | undefined;
-  private manualCardResizeObserver: ResizeObserver | undefined;
+  private cardMode: SuggestionCardMode | undefined;
+  private floatingCleanup: (() => void) | undefined;
+  private hoverBridge: HoverBridge | undefined;
+  private hoverCloseTimer: number | undefined;
+  private hoverOpenTimer: number | undefined;
+  private hoverReference: ReferenceElement | undefined;
   private manualTrigger: HTMLElement | undefined;
+  private pendingHover: HoverCandidate | undefined;
   private primaryPointerDownInEditor = false;
   private selectionStartedOnSuggestion = false;
   private suppressHoverUntilMove = false;
@@ -121,30 +153,15 @@ class PresentationPopover implements PluginValue {
     view.contentDOM.addEventListener("mousemove", this.handleMouseMove, true);
     view.contentDOM.addEventListener("dragstart", this.handleDragStart, true);
     view.contentDOM.addEventListener("click", this.handleClick, true);
+    view.contentDOM.addEventListener("mouseleave", this.handleEditorMouseLeave);
     view.dom.ownerDocument.addEventListener("mouseup", this.handleMouseUp, true);
     view.dom.ownerDocument.addEventListener("dragend", this.handleMouseUp, true);
     view.dom.ownerDocument.addEventListener("pointercancel", this.handlePointerCancel, true);
     view.dom.ownerDocument.defaultView?.addEventListener("blur", this.handlePointerCancel);
-    view.dom.ownerDocument.defaultView?.addEventListener(
-      "resize",
-      this.positionManualCard,
-    );
   }
 
-  get isHoverSuppressed(): boolean {
-    return (
-      this.primaryPointerDownInEditor ||
-      this.suppressHoverUntilMove ||
-      this.element !== undefined
-    );
-  }
-
-  get hasManualPopover(): boolean {
+  get hasCard(): boolean {
     return this.element !== undefined;
-  }
-
-  get hasActiveRefineHover(): boolean {
-    return (this.view.state.field(suggestionHover.active, false)?.length ?? 0) > 0;
   }
 
   update(update: ViewUpdate): void {
@@ -166,6 +183,7 @@ class PresentationPopover implements PluginValue {
     this.view.contentDOM.removeEventListener("mousemove", this.handleMouseMove, true);
     this.view.contentDOM.removeEventListener("dragstart", this.handleDragStart, true);
     this.view.contentDOM.removeEventListener("click", this.handleClick, true);
+    this.view.contentDOM.removeEventListener("mouseleave", this.handleEditorMouseLeave);
     this.view.dom.ownerDocument.removeEventListener("mouseup", this.handleMouseUp, true);
     this.view.dom.ownerDocument.removeEventListener("dragend", this.handleMouseUp, true);
     this.view.dom.ownerDocument.removeEventListener(
@@ -177,10 +195,6 @@ class PresentationPopover implements PluginValue {
       "blur",
       this.handlePointerCancel,
     );
-    this.view.dom.ownerDocument.defaultView?.removeEventListener(
-      "resize",
-      this.positionManualCard,
-    );
     this.primaryPointerDownInEditor = false;
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = false;
@@ -188,20 +202,21 @@ class PresentationPopover implements PluginValue {
   }
 
   open(target: HTMLElement, suggestionId: string): void {
-    this.view.dispatch({ effects: closeHoverTooltips });
-    const bounds = target.getBoundingClientRect();
-    this.openAt(suggestionId, bounds.left, bounds.bottom, target);
+    this.openCard(suggestionId, target, "manual", target);
   }
 
   dismiss(): void {
-    this.view.dispatch({ effects: closeHoverTooltips });
-    this.closeAndRestoreTrigger();
+    if (this.cardMode === "manual") {
+      this.closeAndRestoreTrigger();
+    } else {
+      this.close();
+    }
   }
 
-  private openAt(
+  private openCard(
     suggestionId: string,
-    anchorX: number,
-    anchorY: number,
+    reference: ReferenceElement,
+    mode: SuggestionCardMode,
     trigger?: HTMLElement,
   ): void {
     const presentation = this.view.state.field(presentationField, false);
@@ -214,43 +229,60 @@ class PresentationPopover implements PluginValue {
     }
 
     this.close();
-    this.manualAnchorX = anchorX;
-    this.manualAnchorY = anchorY;
+    this.cardMode = mode;
+    this.hoverReference = mode === "hover" ? reference : undefined;
     this.manualTrigger = trigger;
-    this.element = renderSuggestionCard(
+    const card = renderSuggestionCard(
       this.view.dom.ownerDocument,
       suggestion,
       presentation.snapshot.appearance,
       presentation.actions,
       presentation.renderExplanation,
-      () => this.closeAndRestoreTrigger(),
+      () => mode === "manual" ? this.closeAndRestoreTrigger() : this.close(),
     );
-    this.element.classList.add("refine-tooltip--manual");
-    this.element.style.left = `${anchorX}px`;
-    this.element.style.top = `${anchorY + 4}px`;
+    card.classList.add(
+      "refine-tooltip--floating",
+      `refine-tooltip--${mode}`,
+    );
+    card.style.left = "0px";
+    card.style.top = "0px";
+    card.style.visibility = "hidden";
+    card.dataset.refineSuggestionId = suggestionId;
+    this.element = card;
     const ownerDocument = this.view.dom.ownerDocument;
-    ownerDocument.body.append(this.element);
-    this.positionManualCard();
-    const ResizeObserverConstructor = ownerDocument.defaultView?.ResizeObserver;
-    if (ResizeObserverConstructor) {
-      this.manualCardResizeObserver = new ResizeObserverConstructor(() =>
-        this.positionManualCard(),
-      );
-      this.manualCardResizeObserver.observe(this.element);
+    ownerDocument.body.append(card);
+    this.floatingCleanup = autoUpdate(reference, card, () => {
+      void this.positionCard(reference, card);
+    });
+    if (mode === "hover") {
+      card.addEventListener("mouseenter", this.handleCardMouseEnter);
+      card.addEventListener("mouseleave", this.handleCardMouseLeave);
+      card.addEventListener("focusin", this.handleCardFocusIn);
+      card.addEventListener("focusout", this.handleCardFocusOut);
+      ownerDocument.addEventListener("mousemove", this.handleDocumentMouseMove, true);
+    } else {
+      card.querySelector<HTMLElement>("button")?.focus();
     }
-    this.element.querySelector<HTMLElement>("button")?.focus();
   }
 
   close(): void {
-    this.manualCardResizeObserver?.disconnect();
-    this.manualCardResizeObserver = undefined;
+    this.cancelPendingHover();
+    this.cancelHoverClose();
+    this.floatingCleanup?.();
+    this.floatingCleanup = undefined;
+    this.view.dom.ownerDocument.removeEventListener(
+      "mousemove",
+      this.handleDocumentMouseMove,
+      true,
+    );
     if (this.element) {
       disposeSuggestionCard(this.element);
       this.element.remove();
     }
     this.element = undefined;
-    this.manualAnchorX = undefined;
-    this.manualAnchorY = undefined;
+    this.cardMode = undefined;
+    this.hoverBridge = undefined;
+    this.hoverReference = undefined;
     this.manualTrigger = undefined;
   }
 
@@ -262,53 +294,41 @@ class PresentationPopover implements PluginValue {
     }
   }
 
-  private readonly positionManualCard = (): void => {
-    if (
-      !this.element ||
-      this.manualAnchorX === undefined ||
-      this.manualAnchorY === undefined
-    ) {
+  private async positionCard(
+    reference: ReferenceElement,
+    card: HTMLElement,
+  ): Promise<void> {
+    const { x, y, placement } = await computePosition(reference, card, {
+      strategy: "fixed",
+      placement: "top-end",
+      middleware: [
+        offset(suggestionCardGapPx),
+        flip({
+          padding: suggestionCardViewportGutterPx,
+          fallbackPlacements: ["bottom-end"],
+        }),
+        shift({ padding: suggestionCardViewportGutterPx }),
+      ],
+    });
+    if (this.element !== card) {
       return;
     }
-
-    const ownerDocument = this.view.dom.ownerDocument;
-    const viewportWidth =
-      ownerDocument.documentElement.clientWidth ||
-      ownerDocument.defaultView?.innerWidth ||
-      0;
-    if (viewportWidth <= 0) {
-      return;
-    }
-
-    const triggerBounds = this.manualTrigger?.isConnected
-      ? this.manualTrigger.getBoundingClientRect()
-      : undefined;
-    const anchorX = triggerBounds?.left ?? this.manualAnchorX;
-    const anchorY = triggerBounds?.bottom ?? this.manualAnchorY;
-    const cardWidth = this.element.getBoundingClientRect().width;
-    const maximumLeft = Math.max(
-      manualPopoverViewportGutterPx,
-      viewportWidth - manualPopoverViewportGutterPx - cardWidth,
-    );
-    const clampedLeft = Math.min(
-      Math.max(anchorX, manualPopoverViewportGutterPx),
-      maximumLeft,
-    );
-    this.element.style.left = `${clampedLeft}px`;
-    this.element.style.top = `${anchorY + 4}px`;
-  };
+    const ownerWindow = this.view.dom.ownerDocument.defaultView;
+    card.style.left = `${roundByDevicePixelRatio(x, ownerWindow)}px`;
+    card.style.top = `${roundByDevicePixelRatio(y, ownerWindow)}px`;
+    card.style.visibility = "";
+    card.dataset.refinePlacement = placement;
+  }
 
   private readonly handleMouseDown = (event: MouseEvent): void => {
     this.primaryPointerDownInEditor = event.button === 0;
     this.selectionStartedOnSuggestion = false;
     if (this.primaryPointerDownInEditor) {
-      // Closing the active tooltip does not cancel CodeMirror's pending hover
-      // timer. Keep its source gated until a later button-free pointer move so
-      // a quick click cannot reopen the card after mouseup.
+      // Keep hover gated until a later button-free pointer move so a quick
+      // click cannot become a delayed card after mouseup.
       this.suppressHoverUntilMove = true;
     }
     this.close();
-    this.view.dispatch({ effects: closeHoverTooltips });
     if (
       event.button !== 0 ||
       event.detail > 1 ||
@@ -333,11 +353,35 @@ class PresentationPopover implements PluginValue {
       // from every captured move rather than relying only on mousedown.
       this.primaryPointerDownInEditor = true;
       this.suppressHoverUntilMove = true;
+      this.cancelPendingHover();
       return;
     }
     this.primaryPointerDownInEditor = false;
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = false;
+    if (this.cardMode === "manual") {
+      return;
+    }
+
+    const match = this.hoverMatch(event);
+    if (!match) {
+      this.cancelPendingHover();
+      if (this.cardMode === "hover") {
+        this.beginHoverClose(event, "card");
+      }
+      return;
+    }
+    if (
+      this.cardMode === "hover" &&
+      this.element &&
+      this.element.dataset.refineSuggestionId === match.suggestion.id
+    ) {
+      this.cancelPendingHover();
+      this.cancelHoverClose();
+      this.hoverBridge = undefined;
+      return;
+    }
+    this.scheduleHoverOpen(match);
   };
 
   private readonly handleDragStart = (event: DragEvent): void => {
@@ -364,7 +408,6 @@ class PresentationPopover implements PluginValue {
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = true;
     this.close();
-    this.view.dispatch({ effects: closeHoverTooltips });
   };
 
   private readonly handleClick = (event: MouseEvent): void => {
@@ -378,12 +421,13 @@ class PresentationPopover implements PluginValue {
     }
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.view.dispatch({ effects: closeHoverTooltips });
-    this.openAt(
+    const reference = hit.trigger ??
+      (hit.match ? this.rangeReference(hit.match) : pointerReference(event));
+    this.openCard(
       hit.suggestionId,
-      hit.anchorX,
-      hit.anchorY,
-      suggestionTarget(event.target),
+      reference,
+      "manual",
+      hit.trigger,
     );
   };
 
@@ -391,54 +435,219 @@ class PresentationPopover implements PluginValue {
     const directTarget = suggestionTarget(event.target);
     const directSuggestionId = directTarget?.dataset.refineSuggestionId;
     if (directTarget && directSuggestionId) {
-      const bounds = directTarget.getBoundingClientRect();
       return {
         suggestionId: directSuggestionId,
-        anchorX: bounds.left,
-        anchorY: bounds.bottom,
+        trigger: directTarget,
       };
     }
 
+    const match = this.hoverMatch(event);
+    return match
+      ? { suggestionId: match.suggestion.id, match }
+      : undefined;
+  }
+
+  private hoverMatch(event: MouseEvent): SuggestionRangeMatch | undefined {
     const presentation = this.view.state.field(presentationField, false);
     const position = this.view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (!presentation || position === null) {
       return undefined;
     }
-    const suggestion = presentation.snapshot.suggestions
-      .filter((candidate) => candidate.sourceId === "document")
-      .flatMap((candidate) =>
-        candidate.highlightRanges.map((range) => ({ candidate, range })),
+    const directTarget = suggestionTarget(event.target);
+    const coordinates = this.view.coordsAtPos(position);
+    if (
+      !directTarget &&
+      coordinates &&
+      (
+        event.clientY < coordinates.top ||
+        event.clientY > coordinates.bottom ||
+        event.clientX < coordinates.left - this.view.defaultCharacterWidth ||
+        event.clientX > coordinates.right + this.view.defaultCharacterWidth
       )
-      .filter(
-        ({ range }) =>
-          range.length > 0 &&
-          position >= range.location &&
-          position <= range.location + range.length,
-      )
-      .sort((left, right) =>
-        compareSuggestionMatches(
-          {
-            suggestion: left.candidate,
-            from: left.range.location,
-            to: left.range.location + left.range.length,
-          },
-          {
-            suggestion: right.candidate,
-            from: right.range.location,
-            to: right.range.location + right.range.length,
-          },
-        ),
-      )[0]?.candidate;
-    if (!suggestion) {
+    ) {
       return undefined;
     }
+    return suggestionAtPosition(
+      presentation.snapshot,
+      position,
+      pointerSide(this.view, event.clientX, coordinates),
+    );
+  }
+
+  private scheduleHoverOpen(match: SuggestionRangeMatch): void {
+    const presentation = this.view.state.field(presentationField, false);
+    const ownerWindow = this.view.dom.ownerDocument.defaultView;
+    if (!presentation || !ownerWindow) {
+      return;
+    }
+    this.cancelPendingHover();
+    const candidate: HoverCandidate = {
+      match,
+      presentationRevision: presentation.snapshot.presentationRevision,
+    };
+    this.pendingHover = candidate;
+    this.hoverOpenTimer = ownerWindow.setTimeout(() => {
+      this.hoverOpenTimer = undefined;
+      if (this.pendingHover !== candidate) {
+        return;
+      }
+      const current = this.view.state.field(presentationField, false);
+      if (
+        !current ||
+        current.snapshot.presentationRevision !== candidate.presentationRevision ||
+        this.primaryPointerDownInEditor ||
+        this.suppressHoverUntilMove ||
+        this.cardMode === "manual"
+      ) {
+        this.pendingHover = undefined;
+        return;
+      }
+      this.openCard(
+        candidate.match.suggestion.id,
+        this.rangeReference(candidate.match),
+        "hover",
+      );
+    }, suggestionHoverOpenDelayMs);
+  }
+
+  private cancelPendingHover(): void {
+    const ownerWindow = this.view.dom.ownerDocument.defaultView;
+    if (this.hoverOpenTimer !== undefined) {
+      ownerWindow?.clearTimeout(this.hoverOpenTimer);
+    }
+    this.hoverOpenTimer = undefined;
+    this.pendingHover = undefined;
+  }
+
+  private beginHoverClose(
+    event: Pick<MouseEvent, "clientX" | "clientY">,
+    target: HoverBridge["target"],
+  ): void {
+    if (this.cardMode !== "hover") {
+      return;
+    }
+    const origin = { x: event.clientX, y: event.clientY };
+    this.hoverBridge = { origin, previous: origin, target };
+    this.scheduleHoverClose(true);
+  }
+
+  private scheduleHoverClose(reset = false): void {
+    if (
+      this.cardMode !== "hover" ||
+      (this.element && this.element.contains(this.view.dom.ownerDocument.activeElement))
+    ) {
+      return;
+    }
+    const ownerWindow = this.view.dom.ownerDocument.defaultView;
+    if (!ownerWindow || (this.hoverCloseTimer !== undefined && !reset)) {
+      return;
+    }
+    this.cancelHoverClose();
+    this.hoverCloseTimer = ownerWindow.setTimeout(() => {
+      this.hoverCloseTimer = undefined;
+      if (this.cardMode === "hover") {
+        this.close();
+      }
+    }, suggestionHoverCloseDelayMs);
+  }
+
+  private cancelHoverClose(): void {
+    if (this.hoverCloseTimer !== undefined) {
+      this.view.dom.ownerDocument.defaultView?.clearTimeout(this.hoverCloseTimer);
+    }
+    this.hoverCloseTimer = undefined;
+  }
+
+  private rangeReference(match: SuggestionRangeMatch): VirtualElement {
     return {
-      suggestionId: suggestion.id,
-      anchorX: event.clientX,
-      anchorY: event.clientY,
+      contextElement: this.view.contentDOM,
+      getBoundingClientRect: () => {
+        const coordinates = this.view.coordsAtPos(match.to, -1) ??
+          this.view.coordsAtPos(match.from, 1);
+        if (!coordinates) {
+          return zeroClientRect();
+        }
+        const right = Math.max(coordinates.left, coordinates.right);
+        return clientRect(
+          right,
+          coordinates.top,
+          0,
+          Math.max(0, coordinates.bottom - coordinates.top),
+        );
+      },
     };
   }
 
+  private readonly handleEditorMouseLeave = (event: MouseEvent): void => {
+    this.cancelPendingHover();
+    if (
+      this.cardMode === "hover" &&
+      this.element &&
+      event.relatedTarget instanceof Node &&
+      this.element.contains(event.relatedTarget)
+    ) {
+      this.cancelHoverClose();
+      return;
+    }
+    this.beginHoverClose(event, "card");
+  };
+
+  private readonly handleCardMouseEnter = (): void => {
+    this.hoverBridge = undefined;
+    this.cancelHoverClose();
+  };
+
+  private readonly handleCardMouseLeave = (event: MouseEvent): void => {
+    this.beginHoverClose(event, "suggestion");
+  };
+
+  private readonly handleCardFocusIn = (): void => {
+    this.hoverBridge = undefined;
+    this.cancelHoverClose();
+  };
+
+  private readonly handleCardFocusOut = (event: FocusEvent): void => {
+    if (
+      this.element &&
+      event.relatedTarget instanceof Node &&
+      this.element.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    this.scheduleHoverClose(true);
+  };
+
+  private readonly handleDocumentMouseMove = (event: MouseEvent): void => {
+    if (this.cardMode !== "hover" || !this.element) {
+      return;
+    }
+    const target = event.target;
+    if (target instanceof Node && this.element.contains(target)) {
+      this.hoverBridge = undefined;
+      this.cancelHoverClose();
+      return;
+    }
+    if (target instanceof Node && this.view.contentDOM.contains(target)) {
+      return;
+    }
+    if (!this.hoverBridge) {
+      this.scheduleHoverClose();
+      return;
+    }
+    const point = { x: event.clientX, y: event.clientY };
+    const bridge = this.hoverBridge;
+    const targetBounds = bridge.target === "card"
+      ? this.element.getBoundingClientRect()
+      : this.hoverReference?.getBoundingClientRect();
+    const safelyBridging = targetBounds && pointerWithinSafeBridge(
+      point,
+      bridge.previous,
+      bridge.origin,
+      targetBounds,
+    );
+    bridge.previous = point;
+    this.scheduleHoverClose(Boolean(safelyBridging));
+  };
 }
 
 const presentationPopover = ViewPlugin.fromClass(PresentationPopover, {
@@ -446,7 +655,7 @@ const presentationPopover = ViewPlugin.fromClass(PresentationPopover, {
     keydown(event): boolean {
       if (
         event.key === "Escape" &&
-        (this.hasManualPopover || this.hasActiveRefineHover)
+        this.hasCard
       ) {
         event.preventDefault();
         this.dismiss();
@@ -467,50 +676,9 @@ const presentationPopover = ViewPlugin.fromClass(PresentationPopover, {
   },
 });
 
-const suggestionHover = hoverTooltip(
-  (view, position, side) => {
-    if (view.plugin(presentationPopover)?.isHoverSuppressed) {
-      return null;
-    }
-    const presentation = view.state.field(presentationField, false);
-    const match = presentation && suggestionAtPosition(presentation.snapshot, position, side);
-    if (!presentation || !match) {
-      return null;
-    }
-    return {
-      pos: match.from,
-      end: match.to,
-      create: () => {
-        const card = renderSuggestionCard(
-          view.dom.ownerDocument,
-          match.suggestion,
-          presentation.snapshot.appearance,
-          presentation.actions,
-          presentation.renderExplanation,
-          () => view.dispatch({ effects: closeHoverTooltips }),
-        );
-        return {
-          dom: card,
-          mount: () => card.parentElement?.classList.add("refine-tooltip-shell"),
-          destroy: () => disposeSuggestionCard(card),
-        };
-      },
-    };
-  },
-  {
-    hoverTime: suggestionHoverTimeMs,
-    hideOnChange: true,
-    hideOn: (transaction) =>
-      transaction.docChanged ||
-      transaction.effects.some((effect) => effect.is(replacePresentation)),
-  },
-);
-
-export function refinePresentationExtension(ownerDocument: Document): Extension {
+export function refinePresentationExtension(_ownerDocument: Document): Extension {
   return [
     presentationField,
-    tooltips({ parent: ownerDocument.body }),
-    suggestionHover,
     presentationPopover,
   ];
 }
@@ -533,6 +701,132 @@ export function installPresentation(
 
 export function clearPresentation(view: EditorView): void {
   view.dispatch({ effects: replacePresentation.of(undefined) });
+}
+
+function pointerSide(
+  view: EditorView,
+  pointerX: number,
+  coordinates: { readonly left: number; readonly right: number } | null,
+): -1 | 1 {
+  if (!coordinates) {
+    return 1;
+  }
+  const before = pointerX < (coordinates.left + coordinates.right) / 2;
+  const leftToRight = view.textDirection === Direction.LTR;
+  return before
+    ? leftToRight ? -1 : 1
+    : leftToRight ? 1 : -1;
+}
+
+function pointerReference(point: Pick<MouseEvent, "clientX" | "clientY">): VirtualElement {
+  const bounds = clientRect(point.clientX, point.clientY, 0, 0);
+  return { getBoundingClientRect: () => bounds };
+}
+
+function clientRect(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+): DOMRect {
+  return new DOMRect(left, top, width, height);
+}
+
+function zeroClientRect(): DOMRect {
+  return clientRect(0, 0, 0, 0);
+}
+
+function roundByDevicePixelRatio(value: number, ownerWindow: Window | null): number {
+  const ratio = ownerWindow?.devicePixelRatio || 1;
+  return Math.round(value * ratio) / ratio;
+}
+
+function pointerWithinSafeBridge(
+  point: PointerPoint,
+  previous: PointerPoint,
+  origin: PointerPoint,
+  target: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+): boolean {
+  const expanded = {
+    left: target.left - suggestionHoverBridgeBufferPx,
+    right: target.right + suggestionHoverBridgeBufferPx,
+    top: target.top - suggestionHoverBridgeBufferPx,
+    bottom: target.bottom + suggestionHoverBridgeBufferPx,
+  };
+  if (pointInsideRect(point, expanded)) {
+    return true;
+  }
+  const [edgeStart, edgeEnd] = bridgeTargetEdge(origin, expanded);
+  return pointInsideTriangle(point, origin, edgeStart, edgeEnd) &&
+    distanceToRect(point, expanded) <= distanceToRect(previous, expanded) + 0.5;
+}
+
+function bridgeTargetEdge(
+  origin: PointerPoint,
+  target: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+): readonly [PointerPoint, PointerPoint] {
+  if (origin.y >= target.bottom) {
+    return [
+      { x: target.left, y: target.bottom },
+      { x: target.right, y: target.bottom },
+    ];
+  }
+  if (origin.y <= target.top) {
+    return [
+      { x: target.left, y: target.top },
+      { x: target.right, y: target.top },
+    ];
+  }
+  if (origin.x <= target.left) {
+    return [
+      { x: target.left, y: target.top },
+      { x: target.left, y: target.bottom },
+    ];
+  }
+  return [
+    { x: target.right, y: target.top },
+    { x: target.right, y: target.bottom },
+  ];
+}
+
+function pointInsideRect(
+  point: PointerPoint,
+  rect: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+): boolean {
+  return point.x >= rect.left && point.x <= rect.right &&
+    point.y >= rect.top && point.y <= rect.bottom;
+}
+
+function pointInsideTriangle(
+  point: PointerPoint,
+  first: PointerPoint,
+  second: PointerPoint,
+  third: PointerPoint,
+): boolean {
+  const firstSign = triangleSign(point, first, second);
+  const secondSign = triangleSign(point, second, third);
+  const thirdSign = triangleSign(point, third, first);
+  const hasNegative = firstSign < 0 || secondSign < 0 || thirdSign < 0;
+  const hasPositive = firstSign > 0 || secondSign > 0 || thirdSign > 0;
+  return !(hasNegative && hasPositive);
+}
+
+function triangleSign(
+  point: PointerPoint,
+  first: PointerPoint,
+  second: PointerPoint,
+): number {
+  return (point.x - second.x) * (first.y - second.y) -
+    (first.x - second.x) * (point.y - second.y);
+}
+
+function distanceToRect(
+  point: PointerPoint,
+  rect: Pick<DOMRect, "left" | "right" | "top" | "bottom">,
+): number {
+  const deltaX = Math.max(rect.left - point.x, 0, point.x - rect.right);
+  const deltaY = Math.max(rect.top - point.y, 0, point.y - rect.bottom);
+  return Math.hypot(deltaX, deltaY);
 }
 
 function suggestionAtPosition(

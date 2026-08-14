@@ -62,13 +62,7 @@
   box-shadow: var(--shadow-s);
 }
 
-.cm-tooltip.refine-tooltip-shell:has(> .refine-tooltip:only-child) {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-
-.refine-tooltip--manual {
+.refine-tooltip--floating {
   position: fixed;
   z-index: var(--layer-popover);
 }
