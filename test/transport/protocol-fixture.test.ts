@@ -22,6 +22,7 @@ interface ProtocolFixture {
   readonly rejection: HandshakeRejectedFrame;
   readonly welcome: WelcomeFrame;
   readonly openDocument: ClientCommandEnvelope;
+  readonly checkingPresentation: ServerEventEnvelope;
   readonly presentation: ServerEventEnvelope;
   readonly explanationStarted: ServerEventEnvelope;
   readonly reportCompleted: ServerEventEnvelope;
@@ -36,6 +37,15 @@ describe("integration protocol V2 golden transcript", () => {
       type: "rejected",
       reason: "incompatibleProtocol",
       protocol: { major: 2, minor: 1 },
+    });
+    expect(fixture.checkingPresentation).toMatchObject({
+      event: {
+        type: "presentationContentReplaced",
+        content: {
+          status: "checking",
+          progress: { completedUnitCount: 1, totalUnitCount: 3 },
+        },
+      },
     });
     expect(fixture.presentation).toMatchObject({
       event: {
@@ -112,8 +122,13 @@ describe("integration protocol V2 golden transcript", () => {
     expect(sent[1]).toEqual(fixture.openDocument);
 
     const events = session.events(new AbortController().signal)[Symbol.asyncIterator]();
+    frames.push(fixture.checkingPresentation);
     frames.push(fixture.presentation);
     frames.push(fixture.applyRequested);
+    await expect(events.next()).resolves.toEqual({
+      done: false,
+      value: fixture.checkingPresentation,
+    });
     await expect(events.next()).resolves.toEqual({
       done: false,
       value: fixture.presentation,

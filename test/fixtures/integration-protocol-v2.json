@@ -45,9 +45,40 @@
       }
     }
   },
-  "presentation": {
+  "checkingPresentation": {
     "type": "event",
     "sequence": 1,
+    "epoch": "epoch-fixture",
+    "causeCommandId": "command-open",
+    "event": {
+      "type": "presentationContentReplaced",
+      "checkId": "check-fixture",
+      "content": {
+        "documentRevision": "fixture:0",
+        "status": "checking",
+        "progress": {
+          "completedUnitCount": 1,
+          "totalUnitCount": 3
+        },
+        "appearance": {
+          "highlight": {
+            "style": "underline",
+            "grammarColor": "#FF2D55",
+            "fluencyColor": "#007AFF"
+          },
+          "diff": {
+            "additionColor": "#34C759",
+            "deletionColor": "#FF3B30",
+            "showHiddenWhitespace": true
+          }
+        },
+        "suggestions": []
+      }
+    }
+  },
+  "presentation": {
+    "type": "event",
+    "sequence": 2,
     "epoch": "epoch-fixture",
     "causeCommandId": "command-open",
     "event": {
@@ -141,7 +172,7 @@
   },
   "applyRequested": {
     "type": "event",
-    "sequence": 2,
+    "sequence": 3,
     "epoch": "epoch-fixture",
     "causeCommandId": "command-apply",
     "event": {
