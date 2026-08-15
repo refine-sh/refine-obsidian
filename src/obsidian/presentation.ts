@@ -38,6 +38,7 @@ import {
   plainExplanationRenderer,
   rebindSuggestionCard,
   renderSuggestionCard,
+  suggestionCardApplyControl,
   type ExplanationRenderer,
 } from "./suggestion-card";
 import {
@@ -955,9 +956,7 @@ class PresentationInteractionController implements PluginValue {
     ) {
       return;
     }
-    const apply = card.querySelector<HTMLButtonElement>(
-      '.refine-tooltip__actions > button[data-refine-action="apply"]',
-    );
+    const apply = suggestionCardApplyControl(card);
     if (!apply) {
       return;
     }

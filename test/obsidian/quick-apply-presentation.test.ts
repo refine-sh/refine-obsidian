@@ -569,7 +569,10 @@ describe("Obsidian suggestion Apply shortcuts", () => {
     decoy.dataset.refineAction = "apply";
     const decoyClick = vi.fn();
     decoy.addEventListener("click", decoyClick);
-    card?.prepend(decoy);
+    const decoyRow = document.createElement("div");
+    decoyRow.className = "refine-tooltip__actions";
+    decoyRow.append(decoy);
+    card?.prepend(decoyRow);
     const realApply = card?.querySelector<HTMLButtonElement>(
       ".refine-tooltip__actions > button[data-refine-action=apply]",
     );

@@ -23,6 +23,7 @@ export const plainExplanationRenderer: ExplanationRenderer = (
 
 const cardCleanup = new WeakMap<HTMLElement, () => void>();
 const cardClose = new WeakMap<HTMLElement, () => void>();
+const cardApplyControl = new WeakMap<HTMLElement, HTMLButtonElement>();
 let suggestionCardLabelSequence = 0;
 let suggestionExplanationLabelSequence = 0;
 
@@ -55,6 +56,12 @@ export function rebindSuggestionCard(
   disposeSuggestionCard(card);
   applySuggestionCardAppearance(card, binding.appearance);
   bindSuggestionCard(card, binding);
+}
+
+export function suggestionCardApplyControl(
+  card: HTMLElement,
+): HTMLButtonElement | undefined {
+  return cardApplyControl.get(card);
 }
 
 function bindSuggestionCard(
@@ -93,21 +100,30 @@ function bindSuggestionCard(
   if (explanation.button) {
     header.element.append(explanation.button);
   }
+  const actionRow = renderSuggestionActions(
+    ownerDocument,
+    suggestion,
+    actions,
+    report,
+    feedback,
+    lifecycle.engage,
+    lifecycle.close,
+  );
+  const apply = actionRow.querySelector<HTMLButtonElement>(
+    ':scope > button[data-refine-action="apply"]',
+  );
+  if (apply) {
+    cardApplyControl.set(card, apply);
+  } else {
+    cardApplyControl.delete(card);
+  }
   card.replaceChildren(...(label ? [label] : []));
   card.append(
     header.element,
     renderSuggestionDiff(ownerDocument, suggestion, appearance),
     explanation.section,
     feedback.element,
-    renderSuggestionActions(
-      ownerDocument,
-      suggestion,
-      actions,
-      report,
-      feedback,
-      lifecycle.engage,
-      lifecycle.close,
-    ),
+    actionRow,
   );
   cardCleanup.set(card, () => {
     explanation.dispose();
@@ -119,6 +135,7 @@ export function disposeSuggestionCard(card: HTMLElement): void {
   cardCleanup.get(card)?.();
   cardCleanup.delete(card);
   cardClose.delete(card);
+  cardApplyControl.delete(card);
 }
 
 function createSuggestionCardShell(
