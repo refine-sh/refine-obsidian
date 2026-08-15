@@ -784,11 +784,23 @@ class PresentationPopover implements PluginValue {
     this.quickApplyTip = tip;
     this.quickApplyTipIdentity = identity;
     const target = quickApplyTipTarget(suggestion, cursor);
-    const reference = this.rangeReference({
+    const rangeReference = this.rangeReference({
       suggestion,
       from: target.location,
       to: target.location + target.length,
     });
+    const reference: VirtualElement = {
+      contextElement: rangeReference.contextElement,
+      getBoundingClientRect: () => {
+        try {
+          return rangeReference.getBoundingClientRect();
+        } catch {
+          // Non-layout DOMs and a closing editor may not expose text geometry.
+          // Keep the transient tip inert without affecting Quick Apply itself.
+          return zeroClientRect();
+        }
+      },
+    };
     this.quickApplyTipCleanup = autoUpdate(reference, tip, () => {
       void this.positionQuickApplyTip(reference, tip);
     });
