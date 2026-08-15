@@ -162,11 +162,7 @@ const presentationField = StateField.define<PresentationState | undefined>({
         next = undefined;
       } else if (
         effect.is(clearQuickApplyActivationEffect) &&
-        next?.type === "live" &&
-        (
-          next.activeQuickApplySuggestionId !== undefined ||
-          next.canAutoActivateQuickApply
-        )
+        next?.type === "live"
       ) {
         next = presentationWithQuickApply(
           next,
@@ -837,23 +833,11 @@ class PresentationInteractionController implements PluginValue {
     this.quickApplyTip = tip;
     this.quickApplyTipIdentity = identity;
     const target = quickApplyTipTarget(suggestion, cursor);
-    const rangeReference = this.rangeReference({
+    const reference = this.rangeReference({
       suggestion,
       from: target.location,
       to: target.location + target.length,
     });
-    const reference: VirtualElement = {
-      contextElement: rangeReference.contextElement,
-      getBoundingClientRect: () => {
-        try {
-          return rangeReference.getBoundingClientRect();
-        } catch {
-          // Non-layout DOMs and a closing editor may not expose text geometry.
-          // Keep the transient tip inert without affecting Quick Apply itself.
-          return zeroClientRect();
-        }
-      },
-    };
     this.quickApplyTipCleanup = autoUpdate(reference, tip, () => {
       void this.positionQuickApplyTip(reference, tip);
     });
