@@ -2235,6 +2235,141 @@ describe("Obsidian presentation", () => {
     }
   });
 
+  it("keeps a hovered suggestion live across cumulative checking replacements", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost(
+        "bad first. bad second.",
+        "hover-progressive-replacement",
+      );
+      const firstPresentation = separatedSuggestionPresentation(
+        "hover-progressive-replacement:0",
+      );
+      const oldApply = vi.fn(async () => ({ status: "completed" as const }));
+      await host.present(
+        {
+          ...firstPresentation,
+          state: {
+            type: "checking",
+            progress: { completedUnitCount: 1, totalUnitCount: 2 },
+          },
+          suggestions: firstPresentation.suggestions.slice(0, 1),
+        },
+        actions({ apply: oldApply }),
+      );
+      const firstHighlight = document.querySelector<HTMLElement>(
+        '[data-refine-suggestion-id="first"]',
+      );
+      await hover(view, firstHighlight, 1);
+      expect(document.querySelector(".refine-tooltip")).not.toBeNull();
+
+      const newApply = vi.fn(async () => ({
+        status: "unavailable" as const,
+        reason: "readOnly" as const,
+      }));
+      await host.present(
+        {
+          ...firstPresentation,
+          presentationRevision: 2,
+          state: {
+            type: "checking",
+            progress: { completedUnitCount: 2, totalUnitCount: 2 },
+          },
+          suggestions: firstPresentation.suggestions.map((suggestion, index) =>
+            index === 0
+              ? { ...suggestion, diff: [{ kind: "insert", text: "updated" }] }
+              : suggestion
+          ),
+        },
+        actions({ apply: newApply }),
+      );
+
+      const card = document.querySelector<HTMLElement>(".refine-tooltip");
+      expect(card).not.toBeNull();
+      expect(card?.querySelector(".refine-tooltip__diff")?.textContent).toBe(
+        "updated",
+      );
+      const apply = [...card?.querySelectorAll<HTMLButtonElement>("button") ?? []]
+        .find((button) => button.textContent === "Apply");
+      apply?.click();
+      await vi.waitFor(() => expect(newApply).toHaveBeenCalledWith("first"));
+      expect(oldApply).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reanchors a retained suggestion card to its replacement highlight", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost(
+        "bad first. bad second.",
+        "hover-replacement-anchor",
+      );
+      const first = separatedSuggestionPresentation(
+        "hover-replacement-anchor:0",
+      );
+      await host.present(
+        { ...first, suggestions: first.suggestions.slice(0, 1) },
+        actions(),
+      );
+      await hover(
+        view,
+        document.querySelector('[data-refine-suggestion-id="first"]'),
+        1,
+      );
+      const coordinates = vi.mocked(view.coordsAtPos);
+      coordinates.mockClear();
+      const retained = first.suggestions[0]!;
+
+      await host.present(
+        {
+          ...first,
+          presentationRevision: 2,
+          suggestions: [{
+            ...retained,
+            activationRange: { location: 11, length: 3 },
+            highlightRanges: [{ location: 11, length: 3 }],
+          }],
+        },
+        actions(),
+      );
+      window.dispatchEvent(new Event("resize"));
+      await vi.runAllTimersAsync();
+
+      expect(document.querySelector(".refine-tooltip")).not.toBeNull();
+      expect(coordinates).toHaveBeenCalledWith(14, -1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a card when the replacement starts a new check generation", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "hover-new-generation",
+      );
+      const first = presentation("hover-new-generation:0");
+      await host.present(first, actions());
+      await hover(
+        view,
+        document.querySelector(".refine-suggestion"),
+        9,
+      );
+
+      await host.present(
+        { ...first, presentationRevision: 2, checkGeneration: 1 },
+        actions(),
+      );
+
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hovers by source position when Live Preview syntax is the event target", async () => {
     const livePreviewSyntax = Decoration.widget({
       side: 1,
@@ -2327,6 +2462,31 @@ describe("Obsidian presentation", () => {
 
       movePointer(highlight);
       await vi.advanceTimersByTimeAsync(200);
+      expect(document.querySelector(".refine-tooltip")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not starve a pending hover when checking progress is replaced", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "pending-hover-replacement",
+      );
+      const first = presentation("pending-hover-replacement:0");
+      await host.present(first, actions());
+      prepareHoverGeometry(view, 9);
+      movePointer(document.querySelector(".refine-suggestion"));
+      await vi.advanceTimersByTimeAsync(50);
+
+      await host.present(
+        { ...first, presentationRevision: 2 },
+        actions(),
+      );
+      await vi.advanceTimersByTimeAsync(100);
+
       expect(document.querySelector(".refine-tooltip")).not.toBeNull();
     } finally {
       vi.useRealTimers();
@@ -2564,6 +2724,102 @@ describe("Obsidian presentation", () => {
     expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe(
       "an",
     );
+  });
+
+  it("preserves the focused card action across a compatible presentation replacement", async () => {
+    const { host } = createHost(
+      "[create an link](URL)or",
+      "keyboard-replacement-focus",
+    );
+    const first = presentation("keyboard-replacement-focus:0");
+    await host.present(first, actions());
+    const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+    highlight?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    const firstApply = document.querySelector<HTMLButtonElement>(
+      ".refine-tooltip button",
+    );
+    expect(document.activeElement).toBe(firstApply);
+
+    await host.present(
+      { ...first, presentationRevision: 2 },
+      actions(),
+    );
+
+    const replacementApply = document.querySelector<HTMLButtonElement>(
+      ".refine-tooltip button",
+    );
+    expect(replacementApply).not.toBe(firstApply);
+    expect(document.activeElement).toBe(replacementApply);
+  });
+
+  it("dismisses a rebound keyboard card with Escape", async () => {
+    const { host } = createHost(
+      "[create an link](URL)or",
+      "keyboard-replacement-escape",
+    );
+    const first = presentation("keyboard-replacement-escape:0");
+    await host.present(first, actions());
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await host.present(
+      { ...first, presentationRevision: 2 },
+      actions(),
+    );
+    const replacementApply = document.querySelector<HTMLButtonElement>(
+      ".refine-tooltip button",
+    );
+
+    replacementApply?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+
+    expect(document.querySelector(".refine-tooltip")).toBeNull();
+    expect(document.activeElement).toBe(
+      document.querySelector(".refine-suggestion"),
+    );
+  });
+
+  it("ignores an old action completion after rebinding the card", async () => {
+    const { host } = createHost(
+      "[create an link](URL)or",
+      "keyboard-replacement-action",
+    );
+    const first = presentation("keyboard-replacement-action:0");
+    let completeApply: ((outcome: { readonly status: "completed" }) => void) |
+      undefined;
+    const oldApply = vi.fn(() =>
+      new Promise<{ readonly status: "completed" }>((resolve) => {
+        completeApply = resolve;
+      })
+    );
+    await host.present(first, actions({ apply: oldApply }));
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="apply"]',
+    )?.click();
+    await vi.waitFor(() => expect(oldApply).toHaveBeenCalledWith("grammar-1"));
+
+    await host.present(
+      {
+        ...first,
+        presentationRevision: 2,
+        suggestions: first.suggestions.map((suggestion) => ({
+          ...suggestion,
+          availableActions: [],
+        })),
+      },
+      actions(),
+    );
+    completeApply?.({ status: "completed" });
+    await Promise.resolve();
+
+    expect(document.querySelector(".refine-tooltip")).not.toBeNull();
+    expect(document.querySelector('[data-refine-action="apply"]')).toBeNull();
   });
 
   it("prefers an above, right-aligned keyboard card and clamps viewport fallbacks", async () => {

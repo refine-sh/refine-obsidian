@@ -22,6 +22,7 @@ export const plainExplanationRenderer: ExplanationRenderer = (
 };
 
 const cardCleanup = new WeakMap<HTMLElement, () => void>();
+const cardClose = new WeakMap<HTMLElement, () => void>();
 let suggestionCardLabelSequence = 0;
 let suggestionExplanationLabelSequence = 0;
 
@@ -41,7 +42,50 @@ export function renderSuggestionCard(
   const card = createSuggestionCardShell(
     ownerDocument,
     appearance,
-    lifecycle.close,
+  );
+  bindSuggestionCard(
+    card,
+    suggestion,
+    appearance,
+    actions,
+    renderExplanation,
+    lifecycle,
+  );
+  return card;
+}
+
+export function rebindSuggestionCard(
+  card: HTMLElement,
+  suggestion: PresentedSuggestion,
+  appearance: PresentationAppearance,
+  actions: SuggestionActions,
+  renderExplanation: ExplanationRenderer,
+  lifecycle: SuggestionCardLifecycle,
+): void {
+  disposeSuggestionCard(card);
+  applySuggestionCardAppearance(card, appearance);
+  bindSuggestionCard(
+    card,
+    suggestion,
+    appearance,
+    actions,
+    renderExplanation,
+    lifecycle,
+  );
+}
+
+function bindSuggestionCard(
+  card: HTMLElement,
+  suggestion: PresentedSuggestion,
+  appearance: PresentationAppearance,
+  actions: SuggestionActions,
+  renderExplanation: ExplanationRenderer,
+  lifecycle: SuggestionCardLifecycle,
+): void {
+  cardClose.set(card, lifecycle.close);
+  const ownerDocument = card.ownerDocument;
+  const label = card.querySelector<HTMLElement>(
+    ".refine-tooltip__accessible-label",
   );
   const header = renderSuggestionHeader(ownerDocument, suggestion);
   const explanation = new SuggestionExplanationController(
@@ -63,6 +107,7 @@ export function renderSuggestionCard(
   if (explanation.button) {
     header.element.append(explanation.button);
   }
+  card.replaceChildren(...(label ? [label] : []));
   card.append(
     header.element,
     renderSuggestionDiff(ownerDocument, suggestion, appearance),
@@ -79,25 +124,24 @@ export function renderSuggestionCard(
     ),
   );
   cardCleanup.set(card, () => explanation.dispose());
-  return card;
 }
 
 export function disposeSuggestionCard(card: HTMLElement): void {
   cardCleanup.get(card)?.();
   cardCleanup.delete(card);
+  cardClose.delete(card);
 }
 
 function createSuggestionCardShell(
   ownerDocument: Document,
   appearance: PresentationAppearance,
-  close: () => void,
 ): HTMLElement {
   const card = ownerDocument.createElement("div");
   card.className = "refine-tooltip";
   card.setAttribute("role", "dialog");
+  card.tabIndex = -1;
   card.style.setProperty("--no-tooltip", "true");
-  card.style.setProperty("--refine-addition-color", appearance.diff.additionColor);
-  card.style.setProperty("--refine-deletion-color", appearance.diff.deletionColor);
+  applySuggestionCardAppearance(card, appearance);
   const label = ownerDocument.createElement("span");
   label.id = `refine-tooltip-label-${++suggestionCardLabelSequence}`;
   label.className = "refine-tooltip__accessible-label";
@@ -110,9 +154,17 @@ function createSuggestionCardShell(
     }
     event.preventDefault();
     event.stopPropagation();
-    close();
+    cardClose.get(card)?.();
   });
   return card;
+}
+
+function applySuggestionCardAppearance(
+  card: HTMLElement,
+  appearance: PresentationAppearance,
+): void {
+  card.style.setProperty("--refine-addition-color", appearance.diff.additionColor);
+  card.style.setProperty("--refine-deletion-color", appearance.diff.deletionColor);
 }
 
 interface SuggestionCardHeader {
@@ -480,6 +532,7 @@ function actionButton(
 ): HTMLButtonElement {
   const button = ownerDocument.createElement("button");
   button.type = "button";
+  button.dataset.refineAction = action;
   button.classList.add("refine-tooltip__action");
   if (action !== "apply") {
     button.classList.add("refine-tooltip__action--text");
