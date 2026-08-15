@@ -1,7 +1,15 @@
 {
   "name": "refine-obsidian",
   "version": "0.1.0",
-  "description": "Native Obsidian integration for Refine writing suggestions",
+  "description": "Private, offline AI grammar, spelling, and fluency checks for Markdown notes on Mac.",
+  "homepage": "https://refine.sh/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runjuu/refine-obsidian.git"
+  },
+  "bugs": {
+    "url": "https://github.com/runjuu/refine-obsidian/issues"
+  },
   "main": "main.js",
   "type": "module",
   "scripts": {
@@ -14,7 +22,14 @@
   "keywords": [
     "obsidian",
     "grammar",
-    "writing"
+    "grammar-checker",
+    "spell-checker",
+    "writing",
+    "writing-assistant",
+    "proofreading",
+    "markdown",
+    "offline-ai",
+    "macos"
   ],
   "author": "Runjuu",
   "license": "MIT",

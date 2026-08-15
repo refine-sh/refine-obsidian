@@ -1,67 +1,182 @@
-# Refine for Obsidian
+<p align="center">
+  <a href="https://refine.sh/">
+    <img src="https://refine.sh/icon.png" alt="Refine" width="96" height="96">
+  </a>
+</p>
 
-Refine for Obsidian presents writing suggestions directly in the Markdown
-editor and applies accepted changes to canonical Markdown source in one
-CodeMirror transaction. Live Preview showing or hiding Markdown syntax does not
-change the text Refine validates or edits.
+<h1 align="center">Refine for Obsidian — Local AI Grammar Checker</h1>
 
-The plugin is desktop-only because it connects to the local Refine app through
-an authenticated Unix-domain socket. Refine must be running.
+<p align="center">
+  <strong>A private, offline AI grammar checker and writing assistant for Obsidian on Mac.</strong>
+</p>
+
+<p align="center">
+  <a href="https://obsidian.md/plugins?id=refine"><strong>Install in Obsidian</strong></a>
+  ·
+  <a href="https://refine.sh/"><strong>Download Refine for Mac</strong></a>
+</p>
+
+Refine checks grammar, spelling, and fluency directly in your Obsidian Markdown
+notes. Context-aware suggestions and explanations appear in the editor, and
+only the changes you accept are applied. Choose a downloaded local AI model to
+keep writing checks on your Mac and work offline.
+
+<!-- Demo GIF: replace this comment with:
+![Refine grammar checker for Obsidian showing an inline suggestion, explanation, and accepted correction](assets/refine-obsidian-demo.gif)
+-->
+
+## Why use Refine with Obsidian?
+
+- **Write without leaving your note.** Grammar and fluency suggestions appear
+  inline in Editing view, including Live Preview.
+- **Understand every correction.** Open a suggestion card to see the proposed
+  change, its language and model, or ask Refine for an explanation when that
+  action is available.
+- **Keep writing private and offline.** With a downloaded local model, the text
+  used for a check and the model's response stay on your Mac.
+- **Protect your Markdown.** Refine validates the current note and expected text
+  before applying an accepted change in a single editor transaction.
+- **Write in your language.** Refine supports
+  [50+ languages and regional variants](https://refine.sh/features).
+- **Use the same assistant across macOS.** Refine also works in other Mac apps,
+  so your writing preferences are not limited to Obsidian.
+
+## Requirements
+
+- macOS 14 or later
+- Obsidian desktop 1.5.0 or later
+- [Refine for Mac](https://refine.sh/) installed and running
+- An active Refine trial or license
+
+New to Refine? Start a full-featured seven-day trial with no credit card
+required. See the current options on the [Refine website](https://refine.sh/#pricing).
+
+## Install
+
+1. [Download Refine for Mac](https://refine.sh/), open it, and complete setup.
+   Download and select a local model if you want private, offline writing checks.
+2. In Obsidian, open **Settings → Community plugins → Browse**.
+3. Search for **Refine**, then select **Install** and **Enable**. You can also
+   [open the Refine plugin in Obsidian](obsidian://show-plugin?id=refine).
+4. Keep Refine running and open a Markdown note in Editing view. The plugin
+   connects to Refine automatically.
+
+## Check a note
+
+Open a Markdown note in Editing view. With **Check Writing Automatically**
+enabled—the default in Refine—the active note is checked after you pause typing
+briefly.
+
+1. Hover over highlighted text to open its suggestion card.
+2. Review the change and inspect the language and model used for the check. If
+   the action is available, choose **Explain** for more context.
+3. Choose **Apply** to accept the correction or **Dismiss** to ignore it.
+
+The Refine icon in Obsidian's status bar shows the connection, checking
+progress, and suggestion count. Select it to open the Refine menu. To check on
+demand, open the Command Palette and run **Refine: Check current note**.
+
+Suggestion colors, highlighting, automatic checks, local or hosted models, and
+Quick Apply shortcuts are configured in the Refine app.
+
+## Privacy and offline use
+
+When a writing task uses a downloaded local model, the note text sent for that
+check and the model's response stay on your Mac. The writing check can run
+without an internet connection after the model is downloaded.
+
+Refine can also use hosted providers that you configure. In that case, requests
+go directly from your Mac to the selected provider and are subject to that
+provider's privacy and retention policies. App and model downloads, updates,
+standard license activation and periodic validation, and hosted checks require
+internet access. An online-activated license can continue through network
+errors for up to 21 days after its last successful validation.
+
+[Learn how Refine handles your writing](https://refine.sh/guides/how-refine-works)
+or read the [privacy policy](https://refine.sh/privacy-policy).
+
+## Troubleshooting
+
+### Refine is not connected
+
+Make sure Refine is installed, open, and up to date. Then select the Refine icon
+in Obsidian's status bar to see the current connection state. The plugin
+reconnects automatically after Refine restarts.
+
+### No suggestions appear
+
+Open a Markdown note in Editing view and confirm that your Refine trial or
+license is active. Check the **Check Writing Automatically** setting in Refine,
+or run **Refine: Check current note** from the Command Palette.
+
+### A suggestion cannot be applied
+
+Refine will not apply a stale correction if the note changed after it was
+checked, or if the note is read-only. Check the current note again and review
+the new suggestion.
+
+## Frequently asked questions
+
+### Is Refine a private Grammarly alternative for Obsidian?
+
+Refine is a local-first AI writing assistant for Mac. With a downloaded local
+model, it can check grammar, spelling, and fluency in Obsidian without sending
+your writing to a cloud model. Refine requires its Mac app and an active trial
+or license; it is not a standalone Obsidian plugin.
+
+### Does Refine work completely offline?
+
+Writing checks can run offline with a downloaded local model. Downloads,
+updates, hosted models, and online license services still require a connection.
+An online-activated license can continue through network errors for up to 21
+days after its last successful validation. If you have a purchased lifetime
+license, you can use
+[Offline Activation](https://refine.sh/guides/offline-grammar-checker-mac) for
+longer disconnected use.
+
+### Does the plugin work on Windows, Linux, or mobile?
+
+No. Refine for Obsidian currently requires the Refine app on macOS and therefore
+works only in Obsidian desktop on Mac.
+
+### Can Refine check an entire vault or Reading view?
+
+No. The plugin checks the active Markdown note in Editing view. It does not run
+vault-wide checks or check Reading view.
+
+### Will an accepted correction damage my Markdown?
+
+The plugin reads the note's canonical Markdown even when Live Preview hides
+syntax. Before applying a correction, it confirms that the note revision and
+expected text still match. If they do not, Refine refuses the stale change and
+asks for a new check.
+
+## Get started
+
+Ready to use a local AI grammar checker in Obsidian?
+[Download Refine for Mac](https://refine.sh/), then
+[install Refine from Obsidian Community Plugins](https://obsidian.md/plugins?id=refine).
+
+## Support
+
+For plugin bugs and feature requests, open a
+[GitHub issue](https://github.com/runjuu/refine-obsidian/issues). For help with
+the Refine app, email [support@refine.sh](mailto:support@refine.sh).
+
+Refine for Obsidian is available under the [MIT License](LICENSE).
 
 ## Development
 
 ```sh
 npm install
+npm run typecheck
 npm test
 npm run build
 ```
 
-Copy `manifest.json`, `main.js`, and `styles.css` to
-`.obsidian/plugins/refine/` in a test vault, then enable **Refine** under
-Community plugins.
+For local testing, copy `manifest.json`, `main.js`, and `styles.css` into
+`.obsidian/plugins/refine/` in a test vault, then reload Obsidian and enable
+**Refine** under Community plugins.
 
-## Architecture
-
-The package deliberately separates reusable integration behavior from host
-code:
-
-- `src/integration/` owns supersession, presentation replacement, reconnects,
-  suggestion actions, and the safe-Apply receipt handshake.
-- `src/transport/` owns the authenticated, length-prefixed Unix-socket
-  protocol shared with the Refine app.
-- `src/obsidian/` is the thin native adapter. It reads CodeMirror's canonical
-  Markdown, renders decorations and suggestion cards, and performs exact
-  source edits atomically.
-
-External editor integrations should reuse the protocol and integration state
-machine. They only replace the host adapter and native presentation.
-
-## V2.4 behavior
-
-- Automatic writing-check scheduling and policy live in the Refine app.
-- **Refine: Check current note** requests an immediate check from the Command
-  Palette. The status menu shows the same action only while automatic checks
-  are disabled or temporarily paused.
-- Refine automatically checks a changed note after a short quiet period when
-  **Check Writing Automatically** is enabled in the Refine app.
-- The bottom status-bar icon shows connection, checking, and suggestion state;
-  activate it to open the Refine menu.
-- Grammar and fluency suggestions are shown as native editor decorations.
-- Highlight style, grammar/fluency colors, diff colors, and hidden-whitespace
-  markers follow Refine's appearance settings without requiring another check.
-- Quick Apply enablement, activation style, and interaction shortcuts follow
-  Refine's settings without requiring another check. An open suggestion card
-  also accepts Refine's configured Apply and Dismiss keys, even when cursor
-  activation is disabled. Dismiss on an open card records an explicit
-  dismissal; Dismiss during cursor activation alone only clears activation.
-- Native and Obsidian writing checks use the same active-trial-or-license
-  entitlement. When it is missing, the session stays connected and exposes an
-  actionable unavailable state without starting a check.
-- Suggestion cards show the check language and model attribution supplied by
-  Refine. Explain streams Refine's native Markdown explanation and identifies
-  its independently selected model.
-- Report uses Refine's native suggestion-feedback service, keeps the card open,
-  and is shown only while suggestion feedback is enabled in Refine.
-- If Refine restarts, the plugin reconnects and reopens the latest complete
-  Markdown snapshot.
-- If an Apply may have reached Obsidian, the plugin never retries the mutation.
+The integration boundaries and safe-Apply semantics are documented in
+[ADR 0012: Host-Native Writing-Check Integration Interface](https://github.com/runjuu/grammar/blob/main/docs/adr/0012-host-native-writing-check-integration-interface.md).
