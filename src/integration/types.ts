@@ -68,6 +68,45 @@ export const DEFAULT_PRESENTATION_APPEARANCE: PresentationAppearance = {
   },
 };
 
+export type SuggestionActionKey =
+  | "tab"
+  | "escape"
+  | "return"
+  | "space"
+  | "delete"
+  | "leftArrow"
+  | "rightArrow"
+  | "upArrow"
+  | "downArrow"
+  | "leftShift"
+  | "rightShift"
+  | "leftOption"
+  | "rightOption"
+  | "leftControl"
+  | "rightControl";
+
+export type QuickApplyActivationStyle =
+  | "highlightChanges"
+  | "showTipAndHighlight";
+
+export interface PresentationInteraction {
+  readonly quickApply: {
+    readonly enabled: boolean;
+    readonly applyKey: SuggestionActionKey;
+    readonly dismissKey: SuggestionActionKey;
+    readonly activationStyle: QuickApplyActivationStyle;
+  };
+}
+
+export const DEFAULT_PRESENTATION_INTERACTION: PresentationInteraction = {
+  quickApply: {
+    enabled: true,
+    applyKey: "tab",
+    dismissKey: "escape",
+    activationStyle: "showTipAndHighlight",
+  },
+};
+
 export type SuggestionActionKind = "apply" | "dismiss" | "explain" | "report";
 
 export interface SuggestionAttribution {
@@ -81,6 +120,7 @@ export interface PresentedSuggestion {
   readonly sourceId: SourceID;
   readonly kind: "grammar" | "fluency" | "mixed";
   readonly attribution: SuggestionAttribution;
+  readonly activationRange: UTF16Range;
   readonly highlightRanges: readonly UTF16Range[];
   readonly diff: readonly DiffRun[];
   readonly availableActions: readonly SuggestionActionKind[];
@@ -94,7 +134,9 @@ export interface CheckingProgress {
 export interface PresentationSnapshot {
   readonly documentRevision: DocumentRevision;
   readonly presentationRevision: number;
+  readonly checkGeneration: number;
   readonly appearance: PresentationAppearance;
+  readonly interaction: PresentationInteraction;
   readonly state:
     | { readonly type: "pending" }
     | { readonly type: "checking"; readonly progress?: CheckingProgress }

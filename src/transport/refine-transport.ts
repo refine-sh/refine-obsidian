@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 
+import type {
+  PresentationInteraction,
+  SuggestionActionKey,
+} from "../integration/types";
+
 import {
   EngineConnectionError,
   type EngineConnectionRecoverability,
@@ -286,7 +291,7 @@ function decodeWelcome(value: unknown): WelcomeFrame {
   }
   return {
     type: "welcome",
-    protocol: { major: 2, minor: 1 },
+    protocol: { major: 2, minor: 2 },
     serverEpoch: object.serverEpoch,
     runResumed: object.runResumed,
     limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -393,6 +398,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
   }
   const suggestions = content.suggestions.map(decodePresentedSuggestion);
   const appearance = decodePresentationAppearance(content.appearance);
+  const interaction = decodePresentationInteraction(content.interaction);
   const progress = content.progress === undefined
     ? undefined
     : decodeCheckingProgress(content.progress);
@@ -408,6 +414,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
       status: "complete",
       coverage: content.coverage,
       appearance,
+      interaction,
       suggestions,
     };
   }
@@ -420,6 +427,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
       status: "unavailable",
       unavailableReason: content.unavailableReason,
       appearance,
+      interaction,
       suggestions,
     };
   }
@@ -429,6 +437,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
       status: "checking",
       progress,
       appearance,
+      interaction,
       suggestions,
     };
   }
@@ -436,6 +445,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
     documentRevision: content.documentRevision,
     status: content.status,
     appearance,
+    interaction,
     suggestions,
   };
 }
@@ -503,6 +513,60 @@ function decodePresentationAppearance(
   };
 }
 
+const SUGGESTION_ACTION_KEYS = [
+  "tab",
+  "escape",
+  "return",
+  "space",
+  "delete",
+  "leftArrow",
+  "rightArrow",
+  "upArrow",
+  "downArrow",
+  "leftShift",
+  "rightShift",
+  "leftOption",
+  "rightOption",
+  "leftControl",
+  "rightControl",
+] as const satisfies readonly SuggestionActionKey[];
+
+function decodePresentationInteraction(value: unknown): PresentationInteraction {
+  const interaction = requireRecord(value, "presentation.interaction");
+  const quickApply = requireRecord(
+    interaction.quickApply,
+    "presentation.interaction.quickApply",
+  );
+  if (
+    !hasExactKeys(interaction, ["quickApply"]) ||
+    !hasExactKeys(quickApply, [
+      "enabled",
+      "applyKey",
+      "dismissKey",
+      "activationStyle",
+    ]) ||
+    typeof quickApply.enabled !== "boolean" ||
+    !isSuggestionActionKey(quickApply.applyKey) ||
+    !isSuggestionActionKey(quickApply.dismissKey) ||
+    (quickApply.activationStyle !== "highlightChanges" &&
+      quickApply.activationStyle !== "showTipAndHighlight")
+  ) {
+    throw new TransportProtocolError("Malformed presentation interaction");
+  }
+  return {
+    quickApply: {
+      enabled: quickApply.enabled,
+      applyKey: quickApply.applyKey,
+      dismissKey: quickApply.dismissKey,
+      activationStyle: quickApply.activationStyle,
+    },
+  };
+}
+
+function isSuggestionActionKey(value: unknown): value is SuggestionActionKey {
+  return (SUGGESTION_ACTION_KEYS as readonly unknown[]).includes(value);
+}
+
 function isCanonicalRGBColor(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9A-F]{6}$/.test(value);
 }
@@ -563,6 +627,10 @@ function decodePresentedSuggestion(
       textDirection: attribution.textDirection,
       checkModelDisplayName: attribution.checkModelDisplayName,
     },
+    activationRange: decodeExactRange(
+      suggestion.activationRange,
+      "suggestion.activationRange",
+    ),
     highlightRanges: suggestion.highlightRanges.map(decodeRange),
     diff: suggestion.diff.map((run) => {
       const object = requireRecord(run, "diff run");
@@ -581,6 +649,17 @@ function decodePresentedSuggestion(
       return action;
     }),
   };
+}
+
+function decodeExactRange(
+  value: unknown,
+  label: string,
+): import("../integration/types").UTF16Range {
+  const range = requireRecord(value, label);
+  if (!hasExactKeys(range, ["location", "length"])) {
+    throw new TransportProtocolError(`${label} must contain only location and length`);
+  }
+  return decodeRange(range);
 }
 
 function decodeApplyRequest(value: unknown): import("../integration/types").HostApplyRequest {

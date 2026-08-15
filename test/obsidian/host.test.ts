@@ -8,7 +8,10 @@ import type {
   PresentationSnapshot,
   SuggestionActions,
 } from "../../src/integration/types";
-import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
+import {
+  DEFAULT_PRESENTATION_APPEARANCE,
+  DEFAULT_PRESENTATION_INTERACTION,
+} from "../../src/integration/types";
 import { ObsidianWritingHost } from "../../src/obsidian/host";
 
 describe("ObsidianWritingHost", () => {
@@ -311,7 +314,9 @@ function pendingPresentation(revision: string): PresentationSnapshot {
   return {
     documentRevision: revision,
     presentationRevision: 1,
+    checkGeneration: 0,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "pending" },
     suggestions: [],
   };

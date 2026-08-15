@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createRefineIntegration } from "../../src/integration/refine-integration";
-import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
+import {
+  DEFAULT_PRESENTATION_APPEARANCE,
+  DEFAULT_PRESENTATION_INTERACTION,
+} from "../../src/integration/types";
 import type {
   DocumentSnapshot,
   HostApplyOutcome,
@@ -12,7 +15,10 @@ import type {
   SuggestionActions,
   WritingHost,
 } from "../../src/integration/types";
-import type { PresentationAppearance } from "../../src/integration/types";
+import type {
+  PresentationAppearance,
+  PresentationInteraction,
+} from "../../src/integration/types";
 import { AsyncQueue } from "../../src/shared/async-queue";
 import { graphemeBoundaries } from "../../src/shared/grapheme-boundaries";
 import type {
@@ -63,12 +69,14 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [
           {
             id: "suggestion-1",
             sourceId: "document",
             kind: "grammar",
             attribution: TEST_ATTRIBUTION,
+            activationRange: { location: 8, length: 2 },
             highlightRanges: [{ location: 8, length: 2 }],
             diff: [
               { kind: "delete", text: "an" },
@@ -155,12 +163,14 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [
           {
             id: "old",
             sourceId: "document",
             kind: "grammar",
             attribution: TEST_ATTRIBUTION,
+            activationRange: { location: 7, length: 2 },
             highlightRanges: [{ location: 7, length: 2 }],
             diff: [],
             availableActions: ["apply"],
@@ -195,6 +205,7 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [],
       },
     });
@@ -206,7 +217,7 @@ describe("RefineIntegration", () => {
     await run;
   });
 
-  it("retains the latest engine appearance across locally synthesized presentations", async () => {
+  it("retains the latest engine presentation settings across locally synthesized presentations", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new FakeEngine();
     const integration = createRefineIntegration({ enginePort: engine });
@@ -214,6 +225,7 @@ describe("RefineIntegration", () => {
     const run = integration.run({ host, signal: controller.signal });
     await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
     expect(host.currentPresentation?.appearance).toEqual(DEFAULT_PRESENTATION_APPEARANCE);
+    expect(host.currentPresentation?.interaction).toEqual(DEFAULT_PRESENTATION_INTERACTION);
 
     engine.emit({
       type: "presentationContentReplaced",
@@ -223,12 +235,14 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: alternateAppearance,
+        interaction: alternateInteraction,
         suggestions: [],
       },
     });
-    await vi.waitFor(() =>
-      expect(host.currentPresentation?.appearance).toEqual(alternateAppearance),
-    );
+    await vi.waitFor(() => {
+      expect(host.currentPresentation?.appearance).toEqual(alternateAppearance);
+      expect(host.currentPresentation?.interaction).toEqual(alternateInteraction);
+    });
 
     host.observations.push({
       type: "snapshot",
@@ -239,6 +253,7 @@ describe("RefineIntegration", () => {
         documentRevision: "doc:1",
         state: { type: "pending" },
         appearance: alternateAppearance,
+        interaction: alternateInteraction,
       }),
     );
 
@@ -248,6 +263,7 @@ describe("RefineIntegration", () => {
     expect(host.currentPresentation).toMatchObject({
       state: { type: "closed" },
       appearance: alternateAppearance,
+      interaction: alternateInteraction,
     });
   });
 
@@ -273,6 +289,106 @@ describe("RefineIntegration", () => {
       expect(host.currentPresentation?.presentationRevision).toBeGreaterThan(firstRevision);
       expect(host.currentPresentation?.suggestions[0]?.id).toBe("suggestion-1");
     });
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("advances check lineage only when a different same-revision check is accepted", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link now"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    expect(host.currentPresentation?.checkGeneration).toBe(0);
+    const initialOpen = engine.commands[0];
+    if (!initialOpen) {
+      throw new Error("expected openDocument command");
+    }
+
+    engine.emit(progressivePresentation("check-1", 1), initialOpen.id);
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions.map(({ id }) => id)).toEqual([
+        "sentence-1",
+      ]),
+    );
+    const firstCheckGeneration = host.currentPresentation?.checkGeneration;
+    if (firstCheckGeneration === undefined) {
+      throw new Error("expected an accepted check generation");
+    }
+    expect(firstCheckGeneration).toBeGreaterThan(0);
+
+    engine.emit(progressivePresentation("check-1", 2), initialOpen.id);
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions.map(({ id }) => id)).toEqual([
+        "sentence-1",
+        "sentence-2",
+      ]),
+    );
+    expect(host.currentPresentation?.checkGeneration).toBe(firstCheckGeneration);
+
+    const settingsReplacement = progressivePresentation("check-1", 2);
+    engine.emit({
+      ...settingsReplacement,
+      content: {
+        documentRevision: settingsReplacement.content.documentRevision,
+        status: "complete",
+        coverage: "full",
+        appearance: settingsReplacement.content.appearance,
+        interaction: alternateInteraction,
+        suggestions: settingsReplacement.content.suggestions,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.interaction).toEqual(alternateInteraction),
+    );
+    expect(host.currentPresentation?.checkGeneration).toBe(firstCheckGeneration);
+
+    const apply = host.currentActions?.apply("sentence-1");
+    if (!apply) {
+      throw new Error("expected Apply action");
+    }
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions[0]?.availableActions).toEqual([]),
+    );
+    expect(host.currentPresentation?.checkGeneration).toBe(firstCheckGeneration);
+    const perform = engine.commands.find(
+      ({ command }) => command.type === "performAction",
+    )?.command;
+    if (!perform || perform.type !== "performAction") {
+      throw new Error("expected performAction command");
+    }
+    engine.emit({
+      type: "actionRejected",
+      actionId: perform.actionId,
+      reason: "readOnly",
+    });
+    await expect(apply).resolves.toEqual({
+      status: "unavailable",
+      reason: "readOnly",
+    });
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions[0]?.availableActions).toEqual([
+        "apply",
+      ]),
+    );
+    expect(host.currentPresentation?.checkGeneration).toBe(firstCheckGeneration);
+
+    host.observations.push({ type: "checkRequested", revision: "doc:0" });
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command.type).toBe("requestCheck"),
+    );
+    engine.emit(progressivePresentation("check-2", 1));
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions.map(({ id }) => id)).toEqual([
+        "sentence-1",
+      ]),
+    );
+    expect(host.currentPresentation?.checkGeneration).toBeGreaterThan(
+      firstCheckGeneration,
+    );
 
     controller.abort();
     host.observations.close();
@@ -310,6 +426,7 @@ describe("RefineIntegration", () => {
         status: "checking",
         progress: { completedUnitCount: 1, totalUnitCount: 3 },
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [firstSuggestion],
       },
     });
@@ -333,6 +450,7 @@ describe("RefineIntegration", () => {
         status: "checking",
         progress: { completedUnitCount: 2, totalUnitCount: 3 },
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [firstSuggestion, secondSuggestion],
       },
     });
@@ -365,6 +483,7 @@ describe("RefineIntegration", () => {
         status: "checking",
         progress: { completedUnitCount: 3, totalUnitCount: 3 },
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [firstSuggestion, secondSuggestion],
       },
     });
@@ -391,6 +510,7 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [firstSuggestion, secondSuggestion],
       },
     });
@@ -525,6 +645,46 @@ describe("RefineIntegration", () => {
     controller.abort();
     host.observations.close();
     await run;
+  });
+
+  it.each([
+    {
+      name: "starts before the source",
+      activationRange: { location: -1, length: 0 },
+    },
+    {
+      name: "extends beyond the source",
+      activationRange: { location: 0, length: 5 },
+    },
+    {
+      name: "splits a grapheme",
+      activationRange: { location: 2, length: 0 },
+    },
+    {
+      name: "uses a fractional boundary",
+      activationRange: { location: 1.5, length: 0 },
+    },
+  ])("fails closed when an activation range $name", async ({ activationRange }) => {
+    const host = new FakeHost(snapshot("doc:0", "A😀B"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const run = integration.run({ host, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    const presentation = suggestionPresentation("invalid-activation", "suggestion-1");
+
+    engine.emit({
+      ...presentation,
+      content: {
+        ...presentation.content,
+        suggestions: presentation.content.suggestions.map((suggestion) => ({
+          ...suggestion,
+          activationRange,
+          highlightRanges: [{ location: 0, length: 1 }],
+        })),
+      },
+    });
+
+    await expect(run).rejects.toThrow("invalid activation range");
   });
 
   it.each([
@@ -1856,6 +2016,7 @@ describe("RefineIntegration", () => {
           status: "unavailable",
           unavailableReason: "checkFailed",
           appearance: DEFAULT_PRESENTATION_APPEARANCE,
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [],
         },
       },
@@ -2386,6 +2547,7 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [],
       },
     });
@@ -2417,12 +2579,14 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [
           {
             id: "dismiss-me",
             sourceId: "document",
             kind: "grammar",
             attribution: TEST_ATTRIBUTION,
+            activationRange: { location: 7, length: 2 },
             highlightRanges: [{ location: 7, length: 2 }],
             diff: [],
             availableActions: ["apply", "dismiss"],
@@ -2505,6 +2669,7 @@ describe("RefineIntegration", () => {
           status: "checking",
           progress: { completedUnitCount: 1, totalUnitCount: 3 },
           appearance: DEFAULT_PRESENTATION_APPEARANCE,
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [],
         },
       },
@@ -2537,6 +2702,7 @@ describe("RefineIntegration", () => {
           status: "checking",
           progress: { completedUnitCount: 2, totalUnitCount: 3 },
           appearance: DEFAULT_PRESENTATION_APPEARANCE,
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [],
         },
       },
@@ -2851,6 +3017,7 @@ describe("RefineIntegration", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [],
       },
     });
@@ -3017,6 +3184,15 @@ const alternateAppearance: PresentationAppearance = {
     additionColor: "#123456",
     deletionColor: "#ABCDEF",
     showHiddenWhitespace: false,
+  },
+};
+
+const alternateInteraction: PresentationInteraction = {
+  quickApply: {
+    enabled: false,
+    applyKey: "rightShift",
+    dismissKey: "leftControl",
+    activationStyle: "highlightChanges",
   },
 };
 
@@ -3199,12 +3375,16 @@ class FakeEngine {
     });
   }
 
-  emit(event: ServerEventEnvelope["event"]): void {
+  emit(
+    event: ServerEventEnvelope["event"],
+    causeCommandId?: string,
+  ): void {
     this.eventSequence += 1;
     this.eventQueue.push({
       type: "event",
       sequence: this.eventSequence,
       epoch: "epoch-1",
+      ...(causeCommandId === undefined ? {} : { causeCommandId }),
       event,
     });
   }
@@ -3239,12 +3419,14 @@ function suggestionPresentation(
       status: "complete",
       coverage: "full",
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: [
         {
           id: suggestionId,
           sourceId: "document",
           kind: "grammar",
           attribution: TEST_ATTRIBUTION,
+          activationRange: { location: 7, length: 2 },
           highlightRanges: [{ location: 7, length: 2 }],
           diff: [],
           availableActions: ["apply"],
@@ -3272,6 +3454,7 @@ function checkingLifecyclePresentation(
       status: "checking",
       ...(progress === undefined ? {} : { progress }),
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: [],
     },
   };
@@ -3291,6 +3474,7 @@ function completeLifecyclePresentation(
       status: "complete",
       coverage: "full",
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: [],
     },
   };
@@ -3309,6 +3493,7 @@ function pendingLifecyclePresentation(
       documentRevision: "doc:0",
       status: "pending",
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: [],
     },
   };
@@ -3328,6 +3513,7 @@ function unavailableLifecyclePresentation(
       status: "unavailable",
       unavailableReason: "checkFailed",
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: [],
     },
   };
@@ -3355,6 +3541,7 @@ function progressivePresentation(
       status: "checking",
       progress: { completedUnitCount, totalUnitCount: 3 },
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: ranges.slice(0, completedUnitCount).map((range, index) => ({
         ...base,
         id: `sentence-${index + 1}`,

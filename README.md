@@ -36,7 +36,7 @@ code:
 External editor integrations should reuse the protocol and integration state
 machine. They only replace the host adapter and native presentation.
 
-## V2.1 behavior
+## V2.2 behavior
 
 - Automatic writing-check scheduling and policy live in the Refine app.
 - **Refine: Check current note** requests an immediate check.
@@ -47,6 +47,8 @@ machine. They only replace the host adapter and native presentation.
 - Grammar and fluency suggestions are shown as native editor decorations.
 - Highlight style, grammar/fluency colors, diff colors, and hidden-whitespace
   markers follow Refine's appearance settings without requiring another check.
+- Quick Apply enablement, activation style, and interaction shortcuts follow
+  Refine's settings without requiring another check.
 - Suggestion cards show the check language and model attribution supplied by
   Refine. Explain streams Refine's native Markdown explanation and identifies
   its independently selected model.

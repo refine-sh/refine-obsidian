@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_PRESENTATION_INTERACTION } from "../../src/integration/types";
 import { EngineConnectionError } from "../../src/transport/engine-connection-error";
 import { AsyncQueue } from "../../src/shared/async-queue";
 import {
@@ -23,7 +24,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, sent, () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 1 },
+        protocol: { major: 2, minor: 2 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -42,7 +43,7 @@ describe("Refine transport handshake", () => {
     });
     expect(sent[0]).toEqual({
       type: "hello",
-      protocol: { major: 2, minor: 1 },
+      protocol: { major: 2, minor: 2 },
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
       runId: "run-1",
       launchToken: "secret-1",
@@ -126,6 +127,7 @@ describe("Refine transport handshake", () => {
               showHiddenWhitespace: true,
             },
           },
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [
             {
               id: "suggestion-1",
@@ -136,6 +138,7 @@ describe("Refine transport handshake", () => {
                 textDirection: "ltr",
                 checkModelDisplayName: "On-Device (Gemma)",
               },
+              activationRange: { location: 0, length: 14 },
               highlightRanges: [{ location: 7, length: 2 }],
               diff: [
                 { kind: "delete", text: "an" },
@@ -157,7 +160,11 @@ describe("Refine transport handshake", () => {
               highlight: { style: "dashedUnderline" },
               diff: { showHiddenWhitespace: true },
             },
-            suggestions: [{ id: "suggestion-1" }],
+            interaction: DEFAULT_PRESENTATION_INTERACTION,
+            suggestions: [{
+              id: "suggestion-1",
+              activationRange: { location: 0, length: 14 },
+            }],
           },
         },
       },
@@ -250,7 +257,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 1 },
+        protocol: { major: 2, minor: 2 },
         serverEpoch: "epoch-2",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -270,7 +277,7 @@ describe("Refine transport handshake", () => {
 
   it.each([
     [{ major: 2, minor: 0 }, "server"],
-    [{ major: 2, minor: 2 }, "client"],
+    [{ major: 2, minor: 3 }, "client"],
   ] as const)(
     "reports which component must be updated for welcome protocol %s",
     async (protocol, requiredUpdate) => {
@@ -329,7 +336,7 @@ describe("Refine transport handshake", () => {
 
   it.each([
     [{ major: 2, minor: 0 }, "server"],
-    [{ major: 2, minor: 2 }, "client"],
+    [{ major: 2, minor: 3 }, "client"],
   ] as const)(
     "reports which component must be updated for a rejected protocol %s",
     async (protocol, requiredUpdate) => {
@@ -411,7 +418,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 1 },
+        protocol: { major: 2, minor: 2 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -475,7 +482,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 1 },
+        protocol: { major: 2, minor: 2 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -512,6 +519,7 @@ describe("Refine transport handshake", () => {
               showHiddenWhitespace: true,
             },
           },
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [],
         },
       },
@@ -521,12 +529,120 @@ describe("Refine transport handshake", () => {
     await session.close();
   });
 
+  it("decodes synchronized Quick Apply interaction settings", async () => {
+    const fixture = await connectedEventFixture();
+    const interaction = {
+      quickApply: {
+        enabled: false,
+        applyKey: "rightShift",
+        dismissKey: "leftControl",
+        activationStyle: "highlightChanges",
+      },
+    };
+    fixture.frames.push(completePresentationEvent(interaction));
+
+    await expect(fixture.events.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "presentationContentReplaced",
+          content: {
+            interaction,
+            suggestions: [{ activationRange: { location: 0, length: 14 } }],
+          },
+        },
+      },
+    });
+    await fixture.session.close();
+  });
+
+  it("leaves conflicting Quick Apply keys to the Refine settings UI", async () => {
+    const fixture = await connectedEventFixture();
+    const interaction = {
+      quickApply: {
+        ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
+        dismissKey: "tab",
+      },
+    };
+    fixture.frames.push(completePresentationEvent(interaction));
+
+    await expect(fixture.events.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "presentationContentReplaced",
+          content: { interaction },
+        },
+      },
+    });
+    await fixture.session.close();
+  });
+
+  it.each([
+    ["a missing quickApply object", {}],
+    [
+      "an unknown interaction field",
+      { ...DEFAULT_PRESENTATION_INTERACTION, unexpected: true },
+    ],
+    [
+      "an unknown quickApply field",
+      {
+        quickApply: {
+          ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
+          unexpected: true,
+        },
+      },
+    ],
+    [
+      "an unknown apply key",
+      {
+        quickApply: {
+          ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
+          applyKey: "command",
+        },
+      },
+    ],
+    [
+      "an unknown dismiss key",
+      {
+        quickApply: {
+          ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
+          dismissKey: "command",
+        },
+      },
+    ],
+    [
+      "an unknown activation style",
+      {
+        quickApply: {
+          ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
+          activationStyle: "showTip",
+        },
+      },
+    ],
+  ] as const)("fails closed when presentation interaction contains %s", async (_case, interaction) => {
+    const fixture = await connectedEventFixture();
+    fixture.frames.push(completePresentationEvent(interaction));
+
+    await expect(fixture.events.next()).rejects.toThrow(TransportProtocolError);
+    await fixture.session.close();
+  });
+
+  it("strictly decodes a suggestion activation range", async () => {
+    const fixture = await connectedEventFixture();
+    fixture.frames.push(completePresentationEvent(
+      DEFAULT_PRESENTATION_INTERACTION,
+      { location: 0, length: 14, unexpected: true },
+    ));
+
+    await expect(fixture.events.next()).rejects.toThrow(TransportProtocolError);
+    await fixture.session.close();
+  });
+
   it("decodes checkFailed as a protocol-v2 unavailable reason", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 1 },
+        protocol: { major: 2, minor: 2 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -562,6 +678,7 @@ describe("Refine transport handshake", () => {
               showHiddenWhitespace: true,
             },
           },
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [],
         },
       },
@@ -602,6 +719,7 @@ describe("Refine transport handshake", () => {
               showHiddenWhitespace: true,
             },
           },
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
           suggestions: [],
         },
       },
@@ -656,7 +774,7 @@ describe("Refine transport handshake", () => {
             sent.push(value);
             frames.push({
               type: "welcome",
-              protocol: { major: 2, minor: 1 },
+              protocol: { major: 2, minor: 2 },
               serverEpoch: "epoch-1",
               runResumed: false,
               limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -715,7 +833,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 1 },
+        protocol: { major: 2, minor: 2 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -752,7 +870,7 @@ function endpointLocator(): EndpointLocator {
       launchToken: "secret-1",
       serverEpoch: "epoch-1",
       protocolMajor: 2,
-      protocolMinor: 1,
+      protocolMinor: 2,
       pid: 123,
     }),
   };
@@ -786,7 +904,7 @@ async function connectedEventFixture() {
   const connector = connectionConnector(frames, [], () => {
     frames.push({
       type: "welcome",
-      protocol: { major: 2, minor: 1 },
+      protocol: { major: 2, minor: 2 },
       serverEpoch: "epoch-1",
       runResumed: false,
       limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -834,7 +952,58 @@ function checkingProgressEvent(
             showHiddenWhitespace: true,
           },
         },
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [],
+      },
+    },
+  };
+}
+
+function completePresentationEvent(
+  interaction: unknown,
+  activationRange: unknown = { location: 0, length: 14 },
+): unknown {
+  return {
+    type: "event",
+    sequence: 1,
+    epoch: "epoch-1",
+    event: {
+      type: "presentationContentReplaced",
+      checkId: "check-interaction",
+      content: {
+        documentRevision: "doc:0",
+        status: "complete",
+        coverage: "full",
+        appearance: {
+          highlight: {
+            style: "underline",
+            grammarColor: "#FF2D55",
+            fluencyColor: "#007AFF",
+          },
+          diff: {
+            additionColor: "#34C759",
+            deletionColor: "#FF3B30",
+            showHiddenWhitespace: true,
+          },
+        },
+        interaction,
+        suggestions: [{
+          id: "suggestion-interaction",
+          sourceId: "document",
+          kind: "grammar",
+          attribution: {
+            languageDisplayName: "English (American)",
+            textDirection: "ltr",
+            checkModelDisplayName: "On-Device (Gemma)",
+          },
+          activationRange,
+          highlightRanges: [{ location: 7, length: 2 }],
+          diff: [
+            { kind: "delete", text: "an" },
+            { kind: "insert", text: "a" },
+          ],
+          availableActions: ["apply"],
+        }],
       },
     },
   };

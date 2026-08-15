@@ -3,7 +3,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PresentationSnapshot } from "../../src/integration/types";
-import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
+import {
+  DEFAULT_PRESENTATION_APPEARANCE,
+  DEFAULT_PRESENTATION_INTERACTION,
+} from "../../src/integration/types";
 import type { ObsidianSessionState } from "../../src/obsidian/session-manager";
 import {
   createRefineStatusBarController,
@@ -381,7 +384,9 @@ function presented(
     snapshot: {
       documentRevision: "revision",
       presentationRevision: 1,
+      checkGeneration: 0,
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
+      interaction: DEFAULT_PRESENTATION_INTERACTION,
       state,
       suggestions: Array.from({ length: suggestionCount }, (_, index) => ({
         id: `suggestion-${index}`,
@@ -392,6 +397,7 @@ function presented(
           textDirection: "ltr" as const,
           checkModelDisplayName: "On-Device (Gemma)",
         },
+        activationRange: { location: 0, length: 0 },
         highlightRanges: [],
         diff: [],
         availableActions: [],

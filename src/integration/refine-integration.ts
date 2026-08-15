@@ -25,7 +25,10 @@ import type {
   SuggestionActions,
   WritingHost,
 } from "./types";
-import { DEFAULT_PRESENTATION_APPEARANCE } from "./types";
+import {
+  DEFAULT_PRESENTATION_APPEARANCE,
+  DEFAULT_PRESENTATION_INTERACTION,
+} from "./types";
 
 export interface WritingCheckEnginePort {
   connect(
@@ -148,9 +151,12 @@ class IntegrationRun {
     | undefined;
   private currentPresentation: PresentationSnapshot | undefined;
   private appearance = DEFAULT_PRESENTATION_APPEARANCE;
+  private interaction = DEFAULT_PRESENTATION_INTERACTION;
   private currentCheckId: string | undefined;
+  private currentCheckLineageId: string | undefined;
   private serverEpoch: string | undefined;
   private presentationRevision = 0;
+  private checkGeneration = 0;
   private presentationRequest = 0;
   private presentationTail = Promise.resolve();
   private opened = false;
@@ -221,6 +227,7 @@ class IntegrationRun {
             this.actionAliasCommandIdByActionId.clear();
             this.presentationReplayAlias = undefined;
             this.currentCheckId = undefined;
+            this.currentCheckLineageId = undefined;
             if (this.pendingCheck) {
               delete this.pendingCheck.checkId;
             }
@@ -841,6 +848,7 @@ class IntegrationRun {
     this.advanceAuthoritativeSnapshot(snapshot);
     this.pendingCheck = undefined;
     this.currentCheckId = undefined;
+    this.currentCheckLineageId = undefined;
     this.invalidateActions(
       { status: "stale" },
       (pending) => pending.id === this.applyLeaseActionId,
@@ -848,7 +856,9 @@ class IntegrationRun {
     await this.publish({
       documentRevision: snapshot.revision,
       presentationRevision: this.nextPresentationRevision(),
+      checkGeneration: this.checkGeneration,
       appearance: this.appearance,
+      interaction: this.interaction,
       state: { type: "pending" },
       suggestions: [],
     });
@@ -1031,7 +1041,8 @@ class IntegrationRun {
         ? undefined
         : this.actionPresentationAliasesByCommandId.get(causeCommandId)
             ?.actionId;
-    if (this.currentCheckId !== undefined && this.currentCheckId !== checkId) {
+    const checkIdChanged = this.currentCheckId !== checkId;
+    if (this.currentCheckId !== undefined && checkIdChanged) {
       this.invalidateActions(
         { status: "stale" },
         (pending) =>
@@ -1039,7 +1050,18 @@ class IntegrationRun {
           pending.id === causedActionId,
       );
     }
+    const resumableCheck = this.resumableCheckByRevision.get(
+      content.documentRevision,
+    );
+    const checkLineageId =
+      resumableCheck?.terminalOwnerCheckId === checkId
+        ? resumableCheck.checkId
+        : checkId;
+    if (this.currentCheckLineageId !== checkLineageId) {
+      this.checkGeneration += 1;
+    }
     this.currentCheckId = checkId;
+    this.currentCheckLineageId = checkLineageId;
     const pendingCheck = this.pendingCheck;
     if (
       pendingCheck?.commandId !== undefined &&
@@ -1067,10 +1089,13 @@ class IntegrationRun {
       this.presentationBoundaries(latestSnapshot),
     );
     this.appearance = content.appearance;
+    this.interaction = content.interaction;
     const snapshot: PresentationSnapshot = {
       documentRevision: content.documentRevision,
       presentationRevision: this.nextPresentationRevision(),
+      checkGeneration: this.checkGeneration,
       appearance: this.appearance,
+      interaction: this.interaction,
       state: presentationState(content),
       suggestions: this.disablePendingActions(content.suggestions),
     };
@@ -1381,6 +1406,7 @@ class IntegrationRun {
         this.advanceAuthoritativeSnapshot(outcomeSnapshot);
         this.pendingCheck = undefined;
         this.currentCheckId = undefined;
+        this.currentCheckLineageId = undefined;
         this.invalidateActions(
           { status: "stale" },
           (candidate) => candidate.id === actionId,
@@ -1388,7 +1414,9 @@ class IntegrationRun {
         await this.publish({
           documentRevision: outcomeSnapshot.revision,
           presentationRevision: this.nextPresentationRevision(),
+          checkGeneration: this.checkGeneration,
           appearance: this.appearance,
+          interaction: this.interaction,
           state: { type: "pending" },
           suggestions: [],
         });
@@ -1399,7 +1427,9 @@ class IntegrationRun {
           await this.publish({
             documentRevision: revision,
             presentationRevision: this.nextPresentationRevision(),
+            checkGeneration: this.checkGeneration,
             appearance: this.appearance,
+            interaction: this.interaction,
             state: { type: "pending" },
             suggestions: [],
           });
@@ -1575,7 +1605,9 @@ class IntegrationRun {
     return this.publish({
       documentRevision: revision,
       presentationRevision: this.nextPresentationRevision(),
+      checkGeneration: this.checkGeneration,
       appearance: this.appearance,
+      interaction: this.interaction,
       state: { type: "unavailable", reason },
       suggestions: [],
     });
@@ -1595,7 +1627,9 @@ class IntegrationRun {
       await this.publish({
         documentRevision: revision,
         presentationRevision: this.nextPresentationRevision(),
+        checkGeneration: this.checkGeneration,
         appearance: this.appearance,
+        interaction: this.interaction,
         state: { type: "closed" },
         suggestions: [],
       });
@@ -1697,7 +1731,9 @@ class IntegrationRun {
     return this.publish({
       documentRevision: revision,
       presentationRevision: this.nextPresentationRevision(),
+      checkGeneration: this.checkGeneration,
       appearance: this.appearance,
+      interaction: this.interaction,
       state: { type: "pending" },
       suggestions: [],
     });
@@ -2039,6 +2075,20 @@ function validatePresentationContent(
     if (!boundaries) {
       boundaries = graphemeBoundaries(text);
       boundariesBySource.set(suggestion.sourceId, boundaries);
+    }
+    const activationEnd =
+      suggestion.activationRange.location + suggestion.activationRange.length;
+    if (
+      !Number.isSafeInteger(suggestion.activationRange.location) ||
+      !Number.isSafeInteger(suggestion.activationRange.length) ||
+      suggestion.activationRange.location < 0 ||
+      suggestion.activationRange.length < 0 ||
+      !Number.isSafeInteger(activationEnd) ||
+      activationEnd > text.length ||
+      !boundaries.has(suggestion.activationRange.location) ||
+      !boundaries.has(activationEnd)
+    ) {
+      throw new FatalEngineError("Presentation contained an invalid activation range");
     }
     let previousEnd = 0;
     const insertionAnchors = new Set<number>();

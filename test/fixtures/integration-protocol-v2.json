@@ -1,7 +1,7 @@
 {
   "hello": {
     "type": "hello",
-    "protocol": { "major": 2, "minor": 1 },
+    "protocol": { "major": 2, "minor": 2 },
     "client": {
       "id": "refine-obsidian",
       "version": "0.1.0",
@@ -14,11 +14,11 @@
   "rejection": {
     "type": "rejected",
     "reason": "incompatibleProtocol",
-    "protocol": { "major": 2, "minor": 1 }
+    "protocol": { "major": 2, "minor": 2 }
   },
   "welcome": {
     "type": "welcome",
-    "protocol": { "major": 2, "minor": 1 },
+    "protocol": { "major": 2, "minor": 2 },
     "serverEpoch": "epoch-fixture",
     "runResumed": false,
     "limits": {
@@ -72,6 +72,14 @@
             "showHiddenWhitespace": true
           }
         },
+        "interaction": {
+          "quickApply": {
+            "enabled": true,
+            "applyKey": "tab",
+            "dismissKey": "escape",
+            "activationStyle": "showTipAndHighlight"
+          }
+        },
         "suggestions": []
       }
     }
@@ -100,6 +108,14 @@
             "showHiddenWhitespace": true
           }
         },
+        "interaction": {
+          "quickApply": {
+            "enabled": true,
+            "applyKey": "tab",
+            "dismissKey": "escape",
+            "activationStyle": "showTipAndHighlight"
+          }
+        },
         "suggestions": [
           {
             "id": "suggestion-article",
@@ -110,6 +126,7 @@
               "textDirection": "ltr",
               "checkModelDisplayName": "On-Device (Gemma)"
             },
+            "activationRange": { "location": 8, "length": 2 },
             "highlightRanges": [
               { "location": 8, "length": 2 }
             ],
@@ -128,6 +145,7 @@
               "textDirection": "ltr",
               "checkModelDisplayName": "On-Device (Gemma)"
             },
+            "activationRange": { "location": 11, "length": 12 },
             "highlightRanges": [
               { "location": 21, "length": 1 }
             ],

@@ -11,7 +11,10 @@ import type {
   SuggestionActions,
   WritingHost,
 } from "../../src/integration/types";
-import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
+import {
+  DEFAULT_PRESENTATION_APPEARANCE,
+  DEFAULT_PRESENTATION_INTERACTION,
+} from "../../src/integration/types";
 import {
   ObsidianSessionManager,
   type ObsidianSessionState,
@@ -284,7 +287,9 @@ function pendingPresentation(revision: string): PresentationSnapshot {
   return {
     documentRevision: revision,
     presentationRevision: 1,
+    checkGeneration: 0,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "pending" },
     suggestions: [],
   };
@@ -294,7 +299,9 @@ function completePresentation(revision: string): PresentationSnapshot {
   return {
     documentRevision: revision,
     presentationRevision: 1,
+    checkGeneration: 0,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -306,6 +313,7 @@ function completePresentation(revision: string): PresentationSnapshot {
           textDirection: "ltr",
           checkModelDisplayName: "On-Device (Gemma)",
         },
+        activationRange: { location: 0, length: 5 },
         highlightRanges: [{ location: 0, length: 5 }],
         diff: [
           { kind: "delete", text: "first" },
