@@ -40,9 +40,10 @@ import {
   type ExplanationRenderer,
 } from "./suggestion-card";
 import {
-  quickApplyCandidate,
+  bestQuickApplySuggestion,
+  isQuickApplyCandidate,
+  matchesSuggestionActionKey,
   suggestionActionKeyLabel,
-  suggestionActionKeyMatches,
 } from "./quick-apply";
 
 export type { ExplanationRenderer } from "./suggestion-card";
@@ -200,17 +201,16 @@ function installedPresentation(
       ? undefined
       : input.snapshot.suggestions.find((suggestion) =>
           suggestion.id === previousActive &&
-          suggestion.sourceId === "document" &&
-          suggestion.availableActions.includes("apply") &&
-          selection.ranges.length === 1 &&
-          selection.main.empty &&
-          rangeContainsCursor(suggestion.activationRange, selection.main.head)
+          isQuickApplyCandidate(selection, suggestion)
         );
     if (previousSuggestion) {
       activeSuggestionId = previousSuggestion.id;
       canAutoActivate = false;
     } else if (canAutoActivate) {
-      const candidate = quickApplyCandidate(input.snapshot, selection);
+      const candidate = bestQuickApplySuggestion(
+        selection,
+        input.snapshot.suggestions,
+      );
       activeSuggestionId = candidate?.id;
       canAutoActivate = candidate === undefined;
     }
@@ -248,9 +248,9 @@ function selectionUpdatedPresentation(
       transaction.newDoc.length,
     );
   }
-  const candidate = quickApplyCandidate(
-    presentation.snapshot,
+  const candidate = bestQuickApplySuggestion(
     transaction.newSelection,
+    presentation.snapshot.suggestions,
   );
   return presentationWithQuickApply(
     presentation,
@@ -284,13 +284,6 @@ function presentationWithQuickApply(
       activeSuggestionId,
     ),
   };
-}
-
-function rangeContainsCursor(
-  range: { readonly location: number; readonly length: number },
-  cursor: number,
-): boolean {
-  return cursor >= range.location && cursor <= range.location + range.length;
 }
 
 class InsertionAnchorWidget extends WidgetType {
@@ -422,7 +415,7 @@ function rangesTouch(
   return change.from <= end && range.location <= change.to;
 }
 
-class PresentationPopover implements PluginValue {
+class PresentationInteractionController implements PluginValue {
   private element: HTMLElement | undefined;
   private cardEngaged = false;
   private cardMode: SuggestionCardMode | undefined;
@@ -751,12 +744,12 @@ class PresentationPopover implements PluginValue {
       return;
     }
 
-    if (suggestionActionKeyMatches(event, configuration.dismissKey)) {
+    if (matchesSuggestionActionKey(event, configuration.dismissKey)) {
       this.consumeQuickApplyKey(event);
       this.clearQuickApplyActivation();
       return;
     }
-    if (!suggestionActionKeyMatches(event, configuration.applyKey)) {
+    if (!matchesSuggestionActionKey(event, configuration.applyKey)) {
       return;
     }
     const suggestion = presentation.snapshot.suggestions.find((candidate) =>
@@ -1320,36 +1313,39 @@ class PresentationPopover implements PluginValue {
   };
 }
 
-const presentationPopover = ViewPlugin.fromClass(PresentationPopover, {
-  eventHandlers: {
-    keydown(event): boolean {
-      if (
-        event.key === "Escape" &&
-        this.hasCard
-      ) {
+const presentationInteraction = ViewPlugin.fromClass(
+  PresentationInteractionController,
+  {
+    eventHandlers: {
+      keydown(event): boolean {
+        if (
+          event.key === "Escape" &&
+          this.hasCard
+        ) {
+          event.preventDefault();
+          this.dismiss();
+          return true;
+        }
+        if (event.key !== "Enter" && event.key !== " ") {
+          return false;
+        }
+        const target = suggestionTarget(event.target);
+        const suggestionId = target?.dataset.refineSuggestionId;
+        if (!target || !suggestionId) {
+          return false;
+        }
         event.preventDefault();
-        this.dismiss();
+        this.open(target, suggestionId);
         return true;
-      }
-      if (event.key !== "Enter" && event.key !== " ") {
-        return false;
-      }
-      const target = suggestionTarget(event.target);
-      const suggestionId = target?.dataset.refineSuggestionId;
-      if (!target || !suggestionId) {
-        return false;
-      }
-      event.preventDefault();
-      this.open(target, suggestionId);
-      return true;
+      },
     },
   },
-});
+);
 
 export function refinePresentationExtension(_ownerDocument: Document): Extension {
   return [
     presentationField,
-    presentationPopover,
+    presentationInteraction,
   ];
 }
 

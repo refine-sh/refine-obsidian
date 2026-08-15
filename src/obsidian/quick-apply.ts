@@ -2,7 +2,6 @@ import type { EditorSelection } from "@codemirror/state";
 
 import type {
   PresentedSuggestion,
-  PresentationSnapshot,
   SuggestionActionKey,
   UTF16Range,
 } from "../integration/types";
@@ -90,18 +89,9 @@ export function bestQuickApplySuggestion(
   selection: EditorSelection,
   suggestions: readonly PresentedSuggestion[],
 ): PresentedSuggestion | undefined {
-  if (selection.ranges.length !== 1 || !selection.main.empty) {
-    return undefined;
-  }
-
-  const cursor = selection.main.head;
   let best: PresentedSuggestion | undefined;
   for (const suggestion of suggestions) {
-    if (
-      suggestion.sourceId !== "document" ||
-      !suggestion.availableActions.includes("apply") ||
-      !rangeContainsCursor(suggestion.activationRange, cursor)
-    ) {
+    if (!isQuickApplyCandidate(selection, suggestion)) {
       continue;
     }
     if (best === undefined || compareQuickApplyPriority(suggestion, best) < 0) {
@@ -111,12 +101,15 @@ export function bestQuickApplySuggestion(
   return best;
 }
 
-/** Convenience shape used by the Obsidian presentation adapter. */
-export function quickApplyCandidate(
-  snapshot: Pick<PresentationSnapshot, "suggestions">,
+export function isQuickApplyCandidate(
   selection: EditorSelection,
-): PresentedSuggestion | undefined {
-  return bestQuickApplySuggestion(selection, snapshot.suggestions);
+  suggestion: PresentedSuggestion,
+): boolean {
+  return selection.ranges.length === 1 &&
+    selection.main.empty &&
+    suggestion.sourceId === "document" &&
+    suggestion.availableActions.includes("apply") &&
+    rangeContainsCursor(suggestion.activationRange, selection.main.head);
 }
 
 /** Matches one unmodified key press to Refine's configured action key. */
@@ -141,8 +134,6 @@ export function matchesSuggestionActionKey(
     event.code === expected.code &&
     hasOnlyModifier(event, expected.modifier);
 }
-
-export const suggestionActionKeyMatches = matchesSuggestionActionKey;
 
 export function suggestionActionKeyLabel(actionKey: SuggestionActionKey): string {
   return actionKeyLabels[actionKey];
