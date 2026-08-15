@@ -391,6 +391,54 @@ describe("Obsidian presentation", () => {
     await vi.waitFor(() => expect(apply).toHaveBeenCalledWith("grammar-1"));
   });
 
+  it("does not let a detached card's late action close its replacement", async () => {
+    vi.useFakeTimers();
+    let completeDismiss:
+      | ((outcome: { readonly status: "completed" }) => void)
+      | undefined;
+    const dismissal = new Promise<{ readonly status: "completed" }>((resolve) => {
+      completeDismiss = resolve;
+    });
+    const dismiss = vi.fn(() => dismissal);
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "late-action-card",
+      );
+      const baseSnapshot = presentation("late-action-card:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["dismiss"],
+          })),
+        },
+        actions({ dismiss }),
+      );
+      const highlight = document.querySelector<HTMLElement>(".refine-suggestion");
+      await hover(view, highlight, 9);
+      const firstCard = document.querySelector<HTMLElement>(".refine-tooltip");
+      firstCard?.querySelector<HTMLButtonElement>("button")?.click();
+      await vi.waitFor(() => expect(dismiss).toHaveBeenCalledOnce());
+
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+      movePointer(highlight);
+      await vi.advanceTimersByTimeAsync(220);
+      const replacementCard = document.querySelector<HTMLElement>(".refine-tooltip");
+      expect(replacementCard).not.toBeNull();
+      expect(replacementCard).not.toBe(firstCard);
+
+      completeDismiss?.({ status: "completed" });
+      await dismissal;
+      await Promise.resolve();
+      expect(document.querySelector(".refine-tooltip")).toBe(replacementCard);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows native-style attribution and streams an explanation with its model", async () => {
     const rendered: string[] = [];
     const renderExplanation = vi.fn((markdown: string, element: HTMLElement) => {
@@ -432,6 +480,7 @@ describe("Obsidian presentation", () => {
     expect(document.querySelector(".refine-tooltip__model")?.textContent).toBe("");
     const explainButton = [...document.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent === "Explain");
+    explainButton?.focus();
     explainButton?.click();
 
     await vi.waitFor(() => expect(rendered.at(-1)).toBe("First line.\nSecond line."));
@@ -442,9 +491,93 @@ describe("Obsidian presentation", () => {
       .toContain("Explanation - English (American)");
     expect(document.querySelector(".refine-tooltip__explanation-section")?.textContent)
       .toContain("OpenRouter (GPT-5.6)");
-    expect(document.querySelector(".refine-tooltip__explanation")?.textContent).toBe(
+    const explanation = document.querySelector<HTMLElement>(
+      ".refine-tooltip__explanation",
+    );
+    expect(explanation?.textContent).toBe(
       "rendered:First line.\nSecond line.",
     );
+    expect(document.activeElement).toBe(explanation);
+
+    explanation?.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    expect(document.querySelector(".refine-tooltip")).toBeNull();
+    expect(view.hasFocus).toBe(true);
+  });
+
+  it("keeps a mouse-engaged Explain card open through focus loss", async () => {
+    vi.useFakeTimers();
+    let completeExplanation: (() => void) | undefined;
+    const completion = new Promise<void>((resolve) => {
+      completeExplanation = resolve;
+    });
+    async function* explain(): AsyncIterable<ExplanationUpdate> {
+      yield {
+        status: "started",
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "ltr",
+          modelDisplayName: "On-Device (Gemma)",
+        },
+      };
+      await completion;
+      yield { status: "completed", text: "Explanation." };
+    }
+    const explainAction = vi.fn(explain);
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "explain-focus-loss",
+      );
+      const baseSnapshot = presentation("explain-focus-loss:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["explain"],
+          })),
+        },
+        actions({ explain: explainAction }),
+      );
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      const button = card?.querySelector<HTMLButtonElement>("button");
+      card?.dispatchEvent(new MouseEvent("mouseenter"));
+      button?.focus();
+      button?.click();
+      button?.click();
+
+      await vi.waitFor(() => expect(button?.textContent).toBe("Explaining…"));
+      expect(explainAction).toHaveBeenCalledOnce();
+      expect(button?.disabled).toBe(false);
+      expect(button?.getAttribute("aria-disabled")).toBe("true");
+      expect(button?.getAttribute("aria-busy")).toBe("true");
+      expect(document.activeElement).toBe(button);
+      expect(card?.classList).toContain("refine-tooltip--engaged");
+
+      // Model the focus loss Chromium produced when this action used native
+      // disabled state. Engagement must keep the card alive independently.
+      button?.blur();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      completeExplanation?.();
+      await vi.waitFor(() => expect(
+        card?.querySelector(".refine-tooltip__explanation")?.textContent,
+      ).toBe("Explanation."));
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses compact spacing and controls without changing action order", async () => {
@@ -1198,6 +1331,65 @@ describe("Obsidian presentation", () => {
     );
   });
 
+  it("keeps a mouse-engaged Report card open through focus loss", async () => {
+    vi.useFakeTimers();
+    let completeReport:
+      | ((outcome: { readonly status: "completed" }) => void)
+      | undefined;
+    const report = vi.fn(() =>
+      new Promise<{ readonly status: "completed" }>((resolve) => {
+        completeReport = resolve;
+      })
+    );
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "report-focus-loss",
+      );
+      const baseSnapshot = presentation("report-focus-loss:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["report"],
+          })),
+        },
+        actions({ report }),
+      );
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      const button = card?.querySelector<HTMLButtonElement>("button");
+      card?.dispatchEvent(new MouseEvent("mouseenter"));
+      button?.focus();
+      button?.click();
+      button?.click();
+
+      await vi.waitFor(() => expect(report).toHaveBeenCalledWith("grammar-1"));
+      expect(report).toHaveBeenCalledOnce();
+      expect(button?.textContent).toBe("Reporting…");
+      expect(button?.disabled).toBe(false);
+      expect(button?.getAttribute("aria-disabled")).toBe("true");
+      expect(button?.getAttribute("aria-busy")).toBe("true");
+      expect(document.activeElement).toBe(button);
+
+      button?.blur();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      completeReport?.({ status: "completed" });
+      await vi.waitFor(() => expect(button?.textContent).toBe("Reported"));
+      expect(button?.getAttribute("aria-disabled")).toBe("true");
+      expect(button?.hasAttribute("aria-busy")).toBe(false);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a failed Report card open and retries from the same action", async () => {
     let attempts = 0;
     const report = vi.fn(async () => {
@@ -1822,6 +2014,71 @@ describe("Obsidian presentation", () => {
       vi.runAllTimers();
       expect(document.querySelector(".refine-tooltip")).toBe(card);
 
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a transient hover card only after pointer and focus leave", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "hover-pointer-and-focus",
+      );
+      await host.present(presentation("hover-pointer-and-focus:0"), actions());
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      const button = card?.querySelector<HTMLButtonElement>("button");
+      card?.dispatchEvent(new MouseEvent("mouseenter"));
+      button?.focus();
+
+      button?.blur();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+
+      card?.dispatchEvent(
+        new MouseEvent("mouseleave", {
+          clientX: 20,
+          clientY: 20,
+          relatedTarget: document.body,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(120);
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replace a hover card while it contains keyboard focus", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost(
+        "bad first. bad second.",
+        "focused-hover-replacement",
+      );
+      await host.present(
+        separatedSuggestionPresentation("focused-hover-replacement:0"),
+        actions(),
+      );
+      const highlights = [...document.querySelectorAll<HTMLElement>(
+        ".refine-suggestion",
+      )];
+      const first = highlights.find((element) => view.posAtDOM(element, 0) === 0);
+      const second = highlights.find((element) => view.posAtDOM(element, 0) === 11);
+      await hover(view, first ?? null, 1);
+      const card = document.querySelector<HTMLElement>(".refine-tooltip--hover");
+      const button = card?.querySelector<HTMLButtonElement>("button");
+      button?.focus();
+      expect(document.activeElement).toBe(button);
+
+      vi.mocked(view.posAtCoords).mockReturnValue(12);
+      movePointer(second ?? null);
+      await vi.advanceTimersByTimeAsync(220);
+
+      expect(document.querySelector(".refine-tooltip")).toBe(card);
+      expect(document.activeElement).toBe(button);
     } finally {
       vi.useRealTimers();
     }

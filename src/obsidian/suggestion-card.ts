@@ -25,15 +25,24 @@ const cardCleanup = new WeakMap<HTMLElement, () => void>();
 let suggestionCardLabelSequence = 0;
 let suggestionExplanationLabelSequence = 0;
 
+interface SuggestionCardLifecycle {
+  readonly close: () => void;
+  readonly engage: () => void;
+}
+
 export function renderSuggestionCard(
   ownerDocument: Document,
   suggestion: PresentedSuggestion,
   appearance: PresentationAppearance,
   actions: SuggestionActions,
   renderExplanation: ExplanationRenderer,
-  close: () => void,
+  lifecycle: SuggestionCardLifecycle,
 ): HTMLElement {
-  const card = createSuggestionCardShell(ownerDocument, appearance, close);
+  const card = createSuggestionCardShell(
+    ownerDocument,
+    appearance,
+    lifecycle.close,
+  );
   const header = renderSuggestionHeader(ownerDocument, suggestion);
   const explanation = new SuggestionExplanationController(
     ownerDocument,
@@ -41,12 +50,14 @@ export function renderSuggestionCard(
     actions,
     renderExplanation,
     header.model,
+    lifecycle.engage,
   );
   const feedback = new SuggestionActionFeedback(ownerDocument);
   const report = new SuggestionReportController(
     suggestion,
     actions,
     feedback,
+    lifecycle.engage,
   );
 
   if (explanation.button) {
@@ -63,7 +74,8 @@ export function renderSuggestionCard(
       actions,
       report,
       feedback,
-      close,
+      lifecycle.engage,
+      lifecycle.close,
     ),
   );
   cardCleanup.set(card, () => explanation.dispose());
@@ -176,10 +188,12 @@ class SuggestionExplanationController {
     private readonly actions: SuggestionActions,
     private readonly renderExplanation: ExplanationRenderer,
     private readonly checkModel: HTMLElement,
+    private readonly engageCard: () => void,
   ) {
     this.section = ownerDocument.createElement("section");
     this.section.className = "refine-tooltip__explanation-section";
     this.section.hidden = true;
+    this.section.tabIndex = -1;
 
     const header = ownerDocument.createElement("div");
     header.className = "refine-tooltip__header";
@@ -230,11 +244,11 @@ class SuggestionExplanationController {
   }
 
   private async explain(button: HTMLButtonElement): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || this.activeExplanation) {
       return;
     }
-    this.terminateActiveExplanation();
-    button.disabled = true;
+    this.engageCard();
+    setAriaBusy(button, true);
     button.textContent = "Explaining…";
     this.status.textContent = "Explaining…";
     const iterator = this.actions.explain(this.suggestion.id)[Symbol.asyncIterator]();
@@ -270,6 +284,10 @@ class SuggestionExplanationController {
     } finally {
       if (this.activeExplanation === active) {
         this.activeExplanation = undefined;
+        if (button.isConnected && button.getAttribute("aria-busy") === "true") {
+          setAriaBusy(button, false);
+          button.textContent = "Explain";
+        }
       }
     }
   }
@@ -294,13 +312,20 @@ class SuggestionExplanationController {
     } else if (update.status === "completed") {
       this.renderText(update.text);
       this.status.textContent = "";
+      setAriaBusy(button, false);
+      if (button.ownerDocument.activeElement === button) {
+        const focusTarget = this.explanation.hasAttribute("tabindex")
+          ? this.explanation
+          : this.section;
+        focusTarget.focus({ preventScroll: true });
+      }
       button.remove();
     } else {
       this.section.hidden = false;
       this.status.textContent = update.status === "stale"
         ? "This suggestion is stale."
         : "No explanation available.";
-      button.disabled = false;
+      setAriaBusy(button, false);
       button.textContent = "Explain";
     }
   }
@@ -352,24 +377,44 @@ class SuggestionActionFeedback {
 }
 
 class SuggestionReportController {
+  private state: "ready" | "reporting" | "reported" = "ready";
+
   constructor(
     private readonly suggestion: PresentedSuggestion,
     private readonly actions: SuggestionActions,
     private readonly feedback: SuggestionActionFeedback,
+    private readonly engageCard: () => void,
   ) {}
 
   async report(button: HTMLButtonElement): Promise<void> {
-    button.disabled = true;
+    if (this.state !== "ready") {
+      return;
+    }
+    this.engageCard();
+    this.state = "reporting";
+    setAriaBusy(button, true);
     button.textContent = "Reporting…";
     this.feedback.clear();
-    const outcome = await this.actions.report(this.suggestion.id);
+    let outcome;
+    try {
+      outcome = await this.actions.report(this.suggestion.id);
+    } catch {
+      this.state = "ready";
+      setAriaBusy(button, false);
+      button.textContent = "Retry report";
+      this.feedback.showReportFailed();
+      return;
+    }
     if (outcome.status === "completed") {
+      this.state = "reported";
+      button.removeAttribute("aria-busy");
       button.textContent = "Reported";
       this.feedback.showReportCompleted();
       return;
     }
 
-    button.disabled = false;
+    this.state = "ready";
+    setAriaBusy(button, false);
     button.textContent = "Retry report";
     this.feedback.showReportFailed();
   }
@@ -381,6 +426,7 @@ function renderSuggestionActions(
   actions: SuggestionActions,
   report: SuggestionReportController,
   feedback: SuggestionActionFeedback,
+  engageCard: () => void,
   close: () => void,
 ): HTMLElement {
   const actionRow = ownerDocument.createElement("div");
@@ -393,7 +439,8 @@ function renderSuggestionActions(
     const run = action === "report"
       ? (button: HTMLButtonElement) => report.report(button)
       : async (button: HTMLButtonElement): Promise<void> => {
-          button.disabled = true;
+          engageCard();
+          setAriaBusy(button, true);
           const outcome = await actions[action](suggestion.id);
           if (outcome.status === "completed") {
             close();
@@ -401,7 +448,7 @@ function renderSuggestionActions(
           }
 
           feedback.showActionFailure(outcome.status === "stale");
-          button.disabled = false;
+          setAriaBusy(button, false);
         };
     actionRow.append(
       actionButton(ownerDocument, action, run),
@@ -439,9 +486,23 @@ function actionButton(
   }
   button.textContent = `${action[0]?.toUpperCase() ?? ""}${action.slice(1)}`;
   button.addEventListener("click", () => {
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") {
+      return;
+    }
     void run(button).catch(() => {
       button.disabled = false;
+      setAriaBusy(button, false);
     });
   });
   return button;
+}
+
+function setAriaBusy(button: HTMLButtonElement, busy: boolean): void {
+  if (busy) {
+    button.setAttribute("aria-disabled", "true");
+    button.setAttribute("aria-busy", "true");
+    return;
+  }
+  button.removeAttribute("aria-disabled");
+  button.removeAttribute("aria-busy");
 }

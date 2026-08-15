@@ -424,6 +424,7 @@ function rangesTouch(
 
 class PresentationPopover implements PluginValue {
   private element: HTMLElement | undefined;
+  private cardEngaged = false;
   private cardMode: SuggestionCardMode | undefined;
   private floatingCleanup: (() => void) | undefined;
   private hoverBridge: HoverBridge | undefined;
@@ -432,6 +433,7 @@ class PresentationPopover implements PluginValue {
   private hoverReference: ReferenceElement | undefined;
   private manualTrigger: ManualSuggestionTrigger | undefined;
   private pendingHover: HoverCandidate | undefined;
+  private pointerInsideCard = false;
   private primaryPointerDownInEditor = false;
   private quickApplyTip: HTMLElement | undefined;
   private quickApplyTipCleanup: (() => void) | undefined;
@@ -510,7 +512,7 @@ class PresentationPopover implements PluginValue {
     this.primaryPointerDownInEditor = false;
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = false;
-    this.close();
+    this.close(false);
     this.closeQuickApplyTip();
   }
 
@@ -553,18 +555,33 @@ class PresentationPopover implements PluginValue {
     }
 
     this.clearQuickApplyActivation();
-    this.close();
+    this.close(false);
     this.closeQuickApplyTip();
     this.cardMode = mode;
+    this.cardEngaged = false;
+    this.pointerInsideCard = false;
     this.hoverReference = mode === "hover" ? reference : undefined;
     this.manualTrigger = trigger;
-    const card = renderSuggestionCard(
+    let card: HTMLElement | undefined;
+    card = renderSuggestionCard(
       this.view.dom.ownerDocument,
       suggestion,
       presentation.snapshot.appearance,
       presentation.actions,
       presentation.renderExplanation,
-      () => mode === "manual" ? this.closeAndRestoreTrigger() : this.close(),
+      {
+        close: () => {
+          if (!card || this.element !== card) {
+            return;
+          }
+          mode === "manual" ? this.closeAndRestoreTrigger() : this.close();
+        },
+        engage: () => {
+          if (card) {
+            this.engageCard(card);
+          }
+        },
+      },
     );
     card.classList.add(
       "refine-tooltip--floating",
@@ -591,7 +608,10 @@ class PresentationPopover implements PluginValue {
     }
   }
 
-  close(): void {
+  close(restoreEditorFocus = true): void {
+    const shouldRestoreEditorFocus =
+      restoreEditorFocus &&
+      this.element?.contains(this.view.dom.ownerDocument.activeElement) === true;
     this.cancelPendingHover();
     this.cancelHoverClose();
     this.floatingCleanup?.();
@@ -601,20 +621,51 @@ class PresentationPopover implements PluginValue {
       this.handleDocumentMouseMove,
       true,
     );
+    this.view.dom.ownerDocument.removeEventListener(
+      "mousedown",
+      this.handleEngagedOutsideMouseDown,
+      true,
+    );
     if (this.element) {
       disposeSuggestionCard(this.element);
       this.element.remove();
     }
     this.element = undefined;
+    this.cardEngaged = false;
     this.cardMode = undefined;
     this.hoverBridge = undefined;
     this.hoverReference = undefined;
     this.manualTrigger = undefined;
+    this.pointerInsideCard = false;
+    if (shouldRestoreEditorFocus && this.view.dom.isConnected) {
+      this.view.focus();
+    }
+  }
+
+  private engageCard(card: HTMLElement): void {
+    if (
+      this.element !== card ||
+      this.cardMode !== "hover" ||
+      this.cardEngaged ||
+      !this.element
+    ) {
+      return;
+    }
+    this.cardEngaged = true;
+    this.element.classList.add("refine-tooltip--engaged");
+    this.hoverBridge = undefined;
+    this.cancelPendingHover();
+    this.cancelHoverClose();
+    this.view.dom.ownerDocument.addEventListener(
+      "mousedown",
+      this.handleEngagedOutsideMouseDown,
+      true,
+    );
   }
 
   private closeAndRestoreTrigger(): void {
     const trigger = this.manualTrigger;
-    this.close();
+    this.close(false);
     const liveTrigger = trigger && this.resolveManualSuggestionTrigger(trigger);
     if (liveTrigger) {
       liveTrigger.focus();
@@ -855,7 +906,7 @@ class PresentationPopover implements PluginValue {
       this.suppressHoverUntilMove = true;
       this.clearQuickApplyActivation();
     }
-    this.close();
+    this.close(false);
     if (
       event.button !== 0 ||
       event.detail > 1 ||
@@ -886,7 +937,11 @@ class PresentationPopover implements PluginValue {
     this.primaryPointerDownInEditor = false;
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = false;
-    if (this.cardMode === "manual") {
+    if (
+      this.cardMode === "manual" ||
+      this.cardEngaged ||
+      this.cardContainsFocus()
+    ) {
       return;
     }
 
@@ -936,7 +991,7 @@ class PresentationPopover implements PluginValue {
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = true;
     this.clearQuickApplyActivation();
-    this.close();
+    this.close(false);
   };
 
   private readonly handleClick = (event: MouseEvent): void => {
@@ -1059,7 +1114,7 @@ class PresentationPopover implements PluginValue {
       this.view.state.field(presentationField, false),
     );
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
-    if (!presentation || !ownerWindow) {
+    if (!presentation || !ownerWindow || this.cardContainsFocus()) {
       return;
     }
     this.cancelPendingHover();
@@ -1081,6 +1136,8 @@ class PresentationPopover implements PluginValue {
         current.snapshot.presentationRevision !== candidate.presentationRevision ||
         this.primaryPointerDownInEditor ||
         this.suppressHoverUntilMove ||
+        this.cardEngaged ||
+        this.cardContainsFocus() ||
         this.cardMode === "manual"
       ) {
         this.pendingHover = undefined;
@@ -1107,7 +1164,7 @@ class PresentationPopover implements PluginValue {
     event: Pick<MouseEvent, "clientX" | "clientY">,
     target: HoverBridge["target"],
   ): void {
-    if (this.cardMode !== "hover") {
+    if (this.cardMode !== "hover" || this.cardEngaged) {
       return;
     }
     const origin = { x: event.clientX, y: event.clientY };
@@ -1116,10 +1173,7 @@ class PresentationPopover implements PluginValue {
   }
 
   private scheduleHoverClose(reset = false): void {
-    if (
-      this.cardMode !== "hover" ||
-      (this.element && this.element.contains(this.view.dom.ownerDocument.activeElement))
-    ) {
+    if (!this.canCloseHoverCard()) {
       return;
     }
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
@@ -1129,7 +1183,7 @@ class PresentationPopover implements PluginValue {
     this.cancelHoverClose();
     this.hoverCloseTimer = ownerWindow.setTimeout(() => {
       this.hoverCloseTimer = undefined;
-      if (this.cardMode === "hover") {
+      if (this.canCloseHoverCard()) {
         this.close();
       }
     }, suggestionHoverCloseDelayMs);
@@ -1140,6 +1194,19 @@ class PresentationPopover implements PluginValue {
       this.view.dom.ownerDocument.defaultView?.clearTimeout(this.hoverCloseTimer);
     }
     this.hoverCloseTimer = undefined;
+  }
+
+  private canCloseHoverCard(): boolean {
+    return (
+      this.cardMode === "hover" &&
+      !this.cardEngaged &&
+      !this.pointerInsideCard &&
+      !this.cardContainsFocus()
+    );
+  }
+
+  private cardContainsFocus(): boolean {
+    return this.element?.contains(this.view.dom.ownerDocument.activeElement) === true;
   }
 
   private rangeReference(match: SuggestionRangeMatch): VirtualElement {
@@ -1170,23 +1237,28 @@ class PresentationPopover implements PluginValue {
       event.relatedTarget instanceof Node &&
       this.element.contains(event.relatedTarget)
     ) {
+      this.pointerInsideCard = true;
       this.cancelHoverClose();
       return;
     }
+    this.pointerInsideCard = false;
     this.beginHoverClose(event, "card");
   };
 
   private readonly handleCardMouseEnter = (): void => {
+    this.pointerInsideCard = true;
     this.hoverBridge = undefined;
     this.cancelHoverClose();
   };
 
   private readonly handleCardMouseLeave = (event: MouseEvent): void => {
+    this.pointerInsideCard = false;
     this.beginHoverClose(event, "suggestion");
   };
 
   private readonly handleCardFocusIn = (): void => {
     this.hoverBridge = undefined;
+    this.cancelPendingHover();
     this.cancelHoverClose();
   };
 
@@ -1202,15 +1274,17 @@ class PresentationPopover implements PluginValue {
   };
 
   private readonly handleDocumentMouseMove = (event: MouseEvent): void => {
-    if (this.cardMode !== "hover" || !this.element) {
+    if (this.cardMode !== "hover" || this.cardEngaged || !this.element) {
       return;
     }
     const target = event.target;
     if (target instanceof Node && this.element.contains(target)) {
+      this.pointerInsideCard = true;
       this.hoverBridge = undefined;
       this.cancelHoverClose();
       return;
     }
+    this.pointerInsideCard = false;
     if (target instanceof Node && this.view.contentDOM.contains(target)) {
       return;
     }
@@ -1231,6 +1305,18 @@ class PresentationPopover implements PluginValue {
     );
     bridge.previous = point;
     this.scheduleHoverClose(Boolean(safelyBridging));
+  };
+
+  private readonly handleEngagedOutsideMouseDown = (event: MouseEvent): void => {
+    if (
+      !this.cardEngaged ||
+      !this.element ||
+      !(event.target instanceof Node) ||
+      this.element.contains(event.target)
+    ) {
+      return;
+    }
+    this.close();
   };
 }
 
