@@ -163,7 +163,10 @@ const presentationField = StateField.define<PresentationState | undefined>({
       } else if (
         effect.is(clearQuickApplyActivationEffect) &&
         next?.type === "live" &&
-        next.activeQuickApplySuggestionId !== undefined
+        (
+          next.activeQuickApplySuggestionId !== undefined ||
+          next.canAutoActivateQuickApply
+        )
       ) {
         next = presentationWithQuickApply(
           next,
@@ -775,7 +778,13 @@ class PresentationInteractionController implements PluginValue {
     const presentation = livePresentation(
       this.view.state.field(presentationField, false),
     );
-    if (presentation?.activeQuickApplySuggestionId === undefined) {
+    if (
+      !presentation ||
+      (
+        presentation.activeQuickApplySuggestionId === undefined &&
+        !presentation.canAutoActivateQuickApply
+      )
+    ) {
       return;
     }
     this.view.dispatch({ effects: clearQuickApplyActivationEffect.of(null) });
@@ -1206,8 +1215,24 @@ class PresentationInteractionController implements PluginValue {
     return {
       contextElement: this.view.contentDOM,
       getBoundingClientRect: () => {
-        const coordinates = this.view.coordsAtPos(match.to, -1) ??
-          this.view.coordsAtPos(match.from, 1);
+        const documentLength = this.view.state.doc.length;
+        if (
+          match.from < 0 ||
+          match.to < match.from ||
+          match.to > documentLength
+        ) {
+          return zeroClientRect();
+        }
+        let coordinates: ReturnType<EditorView["coordsAtPos"]>;
+        try {
+          // Browser-backed Obsidian provides Range geometry. Returning a
+          // neutral rect keeps presentation teardown and non-layout DOMs
+          // (including jsdom) fail-closed without affecting the action path.
+          coordinates = this.view.coordsAtPos(match.to, -1) ??
+            this.view.coordsAtPos(match.from, 1);
+        } catch {
+          return zeroClientRect();
+        }
         if (!coordinates) {
           return zeroClientRect();
         }

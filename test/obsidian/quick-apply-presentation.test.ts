@@ -216,6 +216,35 @@ describe("Obsidian cursor Quick Apply", () => {
     ).toBe(true);
   });
 
+  it("fails closed when a keyboard-open insertion card has no text geometry", async () => {
+    const { host, view } = createHost("abc");
+    view.dispatch({ selection: { anchor: 1 }, userEvent: "select" });
+    host.present(
+      snapshot({
+        suggestions: [suggestion({
+          activationRange: { location: 1, length: 0 },
+          highlightRanges: [{ location: 1, length: 0 }],
+        })],
+      }),
+      actions(),
+    );
+    const anchor = document.querySelector<HTMLElement>(
+      ".refine-insertion-anchor--quick-apply-active",
+    );
+    anchor?.focus();
+    const coordinates = vi.spyOn(view, "coordsAtPos").mockImplementation(() => {
+      throw new RangeError("text geometry is no longer available");
+    });
+
+    anchor?.dispatchEvent(keydown("Enter", "Enter"));
+
+    const card = document.querySelector<HTMLElement>(
+      ".refine-tooltip--manual",
+    );
+    await vi.waitFor(() => expect(card?.style.visibility).toBe(""));
+    expect(coordinates).toHaveBeenCalled();
+  });
+
   it("does not capture a configured key from another focused editor control", () => {
     const { host, view } = createHost("A sentence.");
     view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });
@@ -340,6 +369,61 @@ describe("Obsidian cursor Quick Apply", () => {
     ).toBeNull();
     view.contentDOM.dispatchEvent(keydown("Tab", "Tab"));
     expect(apply).toHaveBeenCalledWith("wide");
+  });
+
+  it("disarms an empty first-visible latch when another suggestion is hovered", () => {
+    const { host, view } = createHost("A sentence.");
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    const hovered = suggestion({
+      id: "hovered",
+      activationRange: { location: 5, length: 5 },
+      highlightRanges: [{ location: 5, length: 3 }],
+    });
+    const first = snapshot({
+      state: { type: "checking" },
+      suggestions: [hovered],
+    });
+    host.present(first, actions({ apply }));
+    expect(document.querySelector(".refine-suggestion--quick-apply-active"))
+      .toBeNull();
+
+    vi.spyOn(view, "posAtCoords").mockReturnValue(6);
+    vi.spyOn(view, "coordsAtPos").mockReturnValue({
+      left: 8,
+      right: 12,
+      top: 8,
+      bottom: 20,
+    });
+    document.querySelector<HTMLElement>(
+      '[data-refine-suggestion-id="hovered"]',
+    )?.dispatchEvent(new MouseEvent("mousemove", {
+      bubbles: true,
+      clientX: 10,
+      clientY: 10,
+    }));
+
+    host.present(
+      {
+        ...first,
+        presentationRevision: 2,
+        suggestions: [
+          hovered,
+          suggestion({
+            id: "later-at-caret",
+            activationRange: { location: 0, length: 1 },
+            highlightRanges: [{ location: 0, length: 1 }],
+          }),
+        ],
+      },
+      actions({ apply }),
+    );
+
+    expect(document.querySelector(".refine-suggestion--quick-apply-active"))
+      .toBeNull();
+    const tab = keydown("Tab", "Tab");
+    view.contentDOM.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it("resets first-visible activation only for a new check generation", () => {
