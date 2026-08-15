@@ -11,6 +11,7 @@ import type { ObsidianSessionState } from "../../src/obsidian/session-manager";
 import {
   createRefineStatusBarController,
   statusBarStateForSession,
+  statusMenuShowsAutomaticCheckNotice,
   statusMenuShowsCheckControls,
   statusMenuShowsManualCheck,
 } from "../../src/obsidian/status-bar";
@@ -34,6 +35,22 @@ describe("Refine status bar", () => {
     expect(statusMenuShowsManualCheck({
       type: "disconnected",
       automaticChecksEnabled: false,
+    })).toBe(false);
+  });
+
+  it("hides the automatic-check notice when the manual check is shown", () => {
+    expect(statusMenuShowsAutomaticCheckNotice({
+      type: "idle",
+      automaticChecksEnabled: true,
+    })).toBe(true);
+    expect(statusMenuShowsAutomaticCheckNotice({
+      type: "idle",
+      automaticChecksEnabled: false,
+    })).toBe(false);
+    expect(statusMenuShowsAutomaticCheckNotice({ type: "idle" })).toBe(true);
+    expect(statusMenuShowsAutomaticCheckNotice({
+      type: "disconnected",
+      automaticChecksEnabled: true,
     })).toBe(false);
   });
 

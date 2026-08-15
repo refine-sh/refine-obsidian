@@ -49,6 +49,13 @@ export function statusMenuShowsManualCheck(
     state.automaticChecksEnabled === false;
 }
 
+export function statusMenuShowsAutomaticCheckNotice(
+  state: RefineStatusBarState,
+): boolean {
+  return statusMenuShowsCheckControls(state) &&
+    state.automaticChecksEnabled !== false;
+}
+
 const NO_EDITOR_LABEL = "Refine: No editable Markdown note. Open Refine menu";
 const IDLE_LABEL = "Refine: Ready. Open Refine menu";
 const CHECKING_LABEL = "Refine: Checking current note. Open Refine menu";

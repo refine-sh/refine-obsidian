@@ -22,6 +22,7 @@ import {
   type RefineStatusBarController,
   type RefineStatusBarState,
   statusBarStateForSession,
+  statusMenuShowsAutomaticCheckNotice,
   statusMenuShowsCheckControls,
   statusMenuShowsManualCheck,
 } from "./obsidian/status-bar";
@@ -174,12 +175,14 @@ export default class RefinePlugin extends Plugin {
             .onClick(() => this.requestCheckForActiveEditor()),
         );
       }
-      menu.addItem((item) =>
-        item
-          .setTitle("Automatic checks follow Refine settings")
-          .setIcon("settings-2")
-          .setDisabled(true),
-      );
+      if (statusMenuShowsAutomaticCheckNotice(this.statusState)) {
+        menu.addItem((item) =>
+          item
+            .setTitle("Automatic checks follow Refine settings")
+            .setIcon("settings-2")
+            .setDisabled(true),
+        );
+      }
     }
 
     if (event instanceof MouseEvent) {
