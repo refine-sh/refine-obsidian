@@ -1936,7 +1936,10 @@ describe("Obsidian presentation", () => {
     // Replacing the presentation retains the semantic card. Moving across the
     // second correction reanchors that card while preserving its contextual
     // diff and Apply group.
-    await host.present(snapshot, suggestionActions);
+    await host.present(
+      { ...snapshot, presentationRevision: 2 },
+      suggestionActions,
+    );
     const replacementMarks = document.querySelectorAll<HTMLElement>(
       '[data-refine-suggestion-id="sentence-correction"]',
     );
