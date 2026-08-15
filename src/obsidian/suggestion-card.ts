@@ -109,7 +109,10 @@ function bindSuggestionCard(
       lifecycle.close,
     ),
   );
-  cardCleanup.set(card, () => explanation.dispose());
+  cardCleanup.set(card, () => {
+    explanation.dispose();
+    report.dispose();
+  });
 }
 
 export function disposeSuggestionCard(card: HTMLElement): void {
@@ -416,6 +419,7 @@ class SuggestionActionFeedback {
 
 class SuggestionReportController {
   private state: "ready" | "reporting" | "reported" = "ready";
+  private disposed = false;
 
   constructor(
     private readonly suggestion: PresentedSuggestion,
@@ -424,8 +428,12 @@ class SuggestionReportController {
     private readonly engageCard: () => void,
   ) {}
 
+  dispose(): void {
+    this.disposed = true;
+  }
+
   async report(button: HTMLButtonElement): Promise<void> {
-    if (this.state !== "ready") {
+    if (this.disposed || this.state !== "ready") {
       return;
     }
     this.engageCard();
@@ -437,10 +445,16 @@ class SuggestionReportController {
     try {
       outcome = await this.actions.report(this.suggestion.id);
     } catch {
+      if (this.disposed) {
+        return;
+      }
       this.state = "ready";
       setAriaBusy(button, false);
       button.textContent = "Retry report";
       this.feedback.showReportFailed();
+      return;
+    }
+    if (this.disposed) {
       return;
     }
     if (outcome.status === "completed") {

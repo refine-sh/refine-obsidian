@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 
 import { EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
+import { computePosition } from "@floating-ui/dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createRefineIntegration } from "../../src/integration/refine-integration";
@@ -27,6 +28,14 @@ import type {
   ClientCommand,
   ServerEventEnvelope,
 } from "../../src/transport/wire";
+
+vi.mock("@floating-ui/dom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@floating-ui/dom")>();
+  return {
+    ...actual,
+    computePosition: vi.fn(actual.computePosition),
+  };
+});
 
 if (typeof Range.prototype.getClientRects !== "function") {
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -1924,15 +1933,18 @@ describe("Obsidian presentation", () => {
         .map((part) => part.textContent),
     ).toEqual(["updated", "reran"]);
 
-    // Replacing the presentation closes the first card without changing the
-    // semantic suggestion, letting the second correction act as another
-    // entrance to the same contextual diff and Apply group.
+    // Replacing the presentation retains the semantic card. Moving across the
+    // second correction reanchors that card while preserving its contextual
+    // diff and Apply group.
     await host.present(snapshot, suggestionActions);
     const replacementMarks = document.querySelectorAll<HTMLElement>(
       '[data-refine-suggestion-id="sentence-correction"]',
     );
+    const coordinates = vi.mocked(view.coordsAtPos);
+    coordinates.mockClear();
     await hover(view, replacementMarks[1] ?? null, 26);
     expect(document.querySelector(".refine-tooltip__diff")?.innerHTML).toBe(firstDiff);
+    expect(coordinates).toHaveBeenCalledWith(29, -1);
 
     document.querySelector<HTMLButtonElement>(".refine-tooltip button")?.click();
     await vi.waitFor(() => {
@@ -2344,6 +2356,48 @@ describe("Obsidian presentation", () => {
     }
   });
 
+  it("ignores an obsolete position result after rebinding a retained card", async () => {
+    type PositionResult = Awaited<ReturnType<typeof computePosition>>;
+    const result = (x: number): PositionResult => ({
+      x,
+      y: 24,
+      placement: "top-end",
+      strategy: "fixed",
+      middlewareData: {},
+    });
+    let resolveObsolete!: (value: PositionResult) => void;
+    const obsoletePosition = new Promise<PositionResult>((resolve) => {
+      resolveObsolete = resolve;
+    });
+    const position = vi.mocked(computePosition);
+    const { host } = createHost(
+      "[create an link](URL)or",
+      "keyboard-position-replacement",
+    );
+    const first = presentation("keyboard-position-replacement:0");
+    await host.present(first, actions());
+    position.mockClear();
+    position
+      .mockImplementationOnce(() => obsoletePosition)
+      .mockResolvedValueOnce(result(240));
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    expect(position).toHaveBeenCalledOnce();
+
+    await host.present(
+      { ...first, presentationRevision: 2 },
+      actions(),
+    );
+    const card = document.querySelector<HTMLElement>(".refine-tooltip");
+    await vi.waitFor(() => expect(card?.style.left).toBe("240px"));
+
+    resolveObsolete(result(40));
+    await obsoletePosition;
+    await Promise.resolve();
+    expect(card?.style.left).toBe("240px");
+  });
+
   it("closes a card when the replacement starts a new check generation", async () => {
     vi.useFakeTimers();
     try {
@@ -2390,6 +2444,10 @@ describe("Obsidian presentation", () => {
         actions(),
       );
 
+      expect(document.querySelector(".refine-tooltip")).toBeNull();
+      document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
       expect(document.querySelector(".refine-tooltip")).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -2531,13 +2589,29 @@ describe("Obsidian presentation", () => {
         "pending-hover-replacement",
       );
       const first = presentation("pending-hover-replacement:0");
-      await host.present(first, actions());
+      await host.present(
+        {
+          ...first,
+          state: {
+            type: "checking",
+            progress: { completedUnitCount: 0, totalUnitCount: 2 },
+          },
+        },
+        actions(),
+      );
       prepareHoverGeometry(view, 9);
       movePointer(document.querySelector(".refine-suggestion"));
       await vi.advanceTimersByTimeAsync(50);
 
       await host.present(
-        { ...first, presentationRevision: 2 },
+        {
+          ...first,
+          presentationRevision: 2,
+          state: {
+            type: "checking",
+            progress: { completedUnitCount: 1, totalUnitCount: 2 },
+          },
+        },
         actions(),
       );
       await vi.advanceTimersByTimeAsync(100);
@@ -3003,14 +3077,13 @@ describe("Obsidian presentation", () => {
   });
 
   it("ignores an old report completion after rebinding a retained card", async () => {
-    let completeReport:
-      | ((outcome: { readonly status: "completed" }) => void)
-      | undefined;
-    const oldReport = vi.fn(() =>
-      new Promise<{ readonly status: "completed" }>((resolve) => {
-        completeReport = resolve;
-      })
-    );
+    let completeReport!: (outcome: { readonly status: "completed" }) => void;
+    const oldReportCompletion = new Promise<{
+      readonly status: "completed";
+    }>((resolve) => {
+      completeReport = resolve;
+    });
+    const oldReport = vi.fn(() => oldReportCompletion);
     const replacementReport = vi.fn(async () => ({
       status: "completed" as const,
     }));
@@ -3047,8 +3120,10 @@ describe("Obsidian presentation", () => {
     expect(replacementButton).not.toBe(oldButton);
     expect(replacementButton?.textContent).toBe("Report");
 
-    completeReport?.({ status: "completed" });
-    await vi.waitFor(() => expect(oldButton?.textContent).toBe("Reported"));
+    completeReport({ status: "completed" });
+    await oldReportCompletion;
+    await Promise.resolve();
+    expect(oldButton?.textContent).toBe("Reporting…");
     expect(replacementButton?.textContent).toBe("Report");
     expect(card?.querySelector(".refine-tooltip__feedback-status")?.textContent)
       .toBe("");

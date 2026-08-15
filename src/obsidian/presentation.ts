@@ -422,6 +422,7 @@ function rangesTouch(
 
 class PresentationInteractionController implements PluginValue {
   private cardBindingEpoch = 0;
+  private cardPositionEpoch = 0;
   private element: HTMLElement | undefined;
   private cardMatch: SuggestionRangeMatch | undefined;
   private cardEngaged = false;
@@ -558,7 +559,11 @@ class PresentationInteractionController implements PluginValue {
     const suggestion = presentation?.snapshot.suggestions.find(
       (candidate) => candidate.id === suggestionId,
     );
-    if (!presentation || !suggestion) {
+    if (
+      !presentation ||
+      !isSuggestionBearingPresentation(presentation.snapshot) ||
+      !suggestion
+    ) {
       this.close();
       return;
     }
@@ -596,7 +601,7 @@ class PresentationInteractionController implements PluginValue {
     this.element = card;
     const ownerDocument = this.view.dom.ownerDocument;
     ownerDocument.body.append(card);
-    this.updateCardReference(reference, card, mode, bindingEpoch);
+    this.updateCardReference(reference, card, mode);
     if (mode === "hover") {
       card.addEventListener("mouseenter", this.handleCardMouseEnter);
       card.addEventListener("mouseleave", this.handleCardMouseLeave);
@@ -613,6 +618,7 @@ class PresentationInteractionController implements PluginValue {
       restoreEditorFocus &&
       this.element?.contains(this.view.dom.ownerDocument.activeElement) === true;
     this.cardBindingEpoch += 1;
+    this.cardPositionEpoch += 1;
     this.cancelPendingHover();
     this.cancelHoverClose();
     this.floatingCleanup?.();
@@ -727,7 +733,6 @@ class PresentationInteractionController implements PluginValue {
       replacementReference,
       card,
       mode,
-      bindingEpoch,
     );
     if (cardHadFocus) {
       const focusTarget = focusedAction === undefined
@@ -743,12 +748,12 @@ class PresentationInteractionController implements PluginValue {
     reference: ReferenceElement,
     card: HTMLElement,
     mode: SuggestionCardMode,
-    bindingEpoch: number,
   ): void {
     this.floatingCleanup?.();
     this.hoverReference = mode === "hover" ? reference : undefined;
+    const positionEpoch = ++this.cardPositionEpoch;
     this.floatingCleanup = autoUpdate(reference, card, () => {
-      void this.positionCard(reference, card, bindingEpoch);
+      void this.positionCard(reference, card, positionEpoch);
     });
   }
 
@@ -852,9 +857,9 @@ class PresentationInteractionController implements PluginValue {
   private async positionCard(
     reference: ReferenceElement,
     card: HTMLElement,
-    bindingEpoch: number,
+    positionEpoch: number,
   ): Promise<void> {
-    if (this.element !== card || this.cardBindingEpoch !== bindingEpoch) {
+    if (this.element !== card || this.cardPositionEpoch !== positionEpoch) {
       return;
     }
     const { x, y, placement } = await computePosition(reference, card, {
@@ -869,7 +874,7 @@ class PresentationInteractionController implements PluginValue {
         shift({ padding: suggestionCardViewportGutterPx }),
       ],
     });
-    if (this.element !== card || this.cardBindingEpoch !== bindingEpoch) {
+    if (this.element !== card || this.cardPositionEpoch !== positionEpoch) {
       return;
     }
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
@@ -1141,10 +1146,22 @@ class PresentationInteractionController implements PluginValue {
     if (
       this.cardMode === "hover" &&
       this.element &&
-      this.element.dataset.refineSuggestionId === match.suggestion.id
+      this.element.dataset.refineSuggestionId === match.suggestion.id &&
+      this.cardMatch?.suggestion.sourceId === match.suggestion.sourceId
     ) {
       this.cancelPendingHover();
       this.cancelHoverClose();
+      if (
+        this.cardMatch.from !== match.from ||
+        this.cardMatch.to !== match.to
+      ) {
+        this.cardMatch = match;
+        this.updateCardReference(
+          this.rangeReference(match),
+          this.element,
+          "hover",
+        );
+      }
       this.hoverBridge = undefined;
       return;
     }
