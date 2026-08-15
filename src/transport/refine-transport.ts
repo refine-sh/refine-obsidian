@@ -15,6 +15,7 @@ import {
   FileEndpointLocator,
   type EndpointLocator,
 } from "./endpoint-locator";
+import { MAX_FRAME_BYTES } from "./frame-codec";
 import { UnixFrameConnector } from "./unix-frame-connection";
 import {
   PROTOCOL_MAJOR,
@@ -287,7 +288,7 @@ function decodeWelcome(value: unknown): WelcomeFrame {
     typeof object.serverEpoch !== "string" ||
     object.serverEpoch.length === 0 ||
     typeof object.runResumed !== "boolean" ||
-    limits.maxFrameBytes !== 4_194_304 ||
+    limits.maxFrameBytes !== MAX_FRAME_BYTES ||
     limits.maxSources !== 2 ||
     !isStringArray(object.capabilities)
   ) {
@@ -298,7 +299,7 @@ function decodeWelcome(value: unknown): WelcomeFrame {
     protocol: { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR },
     serverEpoch: object.serverEpoch,
     runResumed: object.runResumed,
-    limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+    limits: { maxFrameBytes: MAX_FRAME_BYTES, maxSources: 2 },
     capabilities: object.capabilities,
   };
 }

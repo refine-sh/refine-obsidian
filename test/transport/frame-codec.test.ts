@@ -23,7 +23,14 @@ describe("length-prefixed JSON frames", () => {
     ]);
   });
 
-  it("rejects a declared frame larger than four MiB before buffering its body", () => {
+  it("encodes a valid JSON body larger than four MiB within the protocol limit", () => {
+    const frame = encodeFrame({ text: "\u0001".repeat(700_000) });
+
+    expect(frame.readUInt32BE(0)).toBeGreaterThan(4 * 1024 * 1024);
+    expect(frame.readUInt32BE(0)).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+  });
+
+  it("rejects a declared frame larger than eight MiB before buffering its body", () => {
     const header = Buffer.alloc(4);
     header.writeUInt32BE(MAX_FRAME_BYTES + 1);
     const decoder = new FrameDecoder();

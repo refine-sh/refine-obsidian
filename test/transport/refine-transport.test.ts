@@ -27,7 +27,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -279,7 +279,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-2",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -307,7 +307,7 @@ describe("Refine transport handshake", () => {
           protocol,
           serverEpoch: "epoch-1",
           runResumed: false,
-          limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+          limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
           capabilities: [],
         });
       });
@@ -334,7 +334,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 0x1_0000, minor: 0 },
         serverEpoch: "epoch-1",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -440,7 +440,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -504,7 +504,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -678,7 +678,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -850,7 +850,7 @@ describe("Refine transport handshake", () => {
               protocol: { major: 2, minor: 4 },
               serverEpoch: "epoch-1",
               runResumed: false,
-              limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+              limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
               capabilities: [],
             });
             return;
@@ -909,7 +909,7 @@ describe("Refine transport handshake", () => {
         protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
-        limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
         capabilities: [],
       });
     });
@@ -980,7 +980,7 @@ async function connectedEventFixture() {
       protocol: { major: 2, minor: 4 },
       serverEpoch: "epoch-1",
       runResumed: false,
-      limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
+      limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
       capabilities: [],
     });
   });

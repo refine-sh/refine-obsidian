@@ -41,7 +41,7 @@
     "serverEpoch": "epoch-fixture",
     "runResumed": false,
     "limits": {
-      "maxFrameBytes": 4194304,
+      "maxFrameBytes": 8388608,
       "maxSources": 2
     },
     "capabilities": []

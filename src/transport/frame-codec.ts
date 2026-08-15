@@ -1,6 +1,6 @@
 import { EngineConnectionError } from "./engine-connection-error";
 
-export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
+export const MAX_FRAME_BYTES = 8_388_608 as const;
 const HEADER_BYTES = 4;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 

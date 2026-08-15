@@ -11,6 +11,7 @@ import type {
   PresentedSuggestion,
   SuggestionActionKey,
 } from "../integration/types";
+import type { MAX_FRAME_BYTES } from "./frame-codec";
 
 export const PROTOCOL_MAJOR = 2 as const;
 export const PROTOCOL_MINOR = 4 as const;
@@ -58,7 +59,7 @@ export interface WelcomeFrame {
   readonly serverEpoch: string;
   readonly runResumed: boolean;
   readonly limits: {
-    readonly maxFrameBytes: 4_194_304;
+    readonly maxFrameBytes: typeof MAX_FRAME_BYTES;
     readonly maxSources: 2;
   };
   readonly capabilities: readonly string[];
