@@ -8,6 +8,7 @@ import {
   DEFAULT_PRESENTATION_INTERACTION,
 } from "../../src/integration/types";
 import type { ObsidianSessionState } from "../../src/obsidian/session-manager";
+import { REFINE_MENU_BAR_ICON_ID } from "../../src/obsidian/icons";
 import {
   createRefineStatusBarController,
   statusBarStateForSession,
@@ -69,15 +70,15 @@ describe("Refine status bar", () => {
     expect(element).toMatchObject({
       role: "button",
       tabIndex: 0,
-      title: "Refine: No editable Markdown note. Open Refine menu",
     });
+    expect(element.hasAttribute("title")).toBe(false);
     expect(element.classList.contains("refine-status-bar")).toBe(true);
     expect(element.getAttribute("aria-label")).toBe(
       "Refine: No editable Markdown note. Open Refine menu",
     );
     expect(element.getAttribute("aria-live")).toBe("polite");
     expect(element.dataset.refineState).toBe("noEditor");
-    expect(renderIcon).toHaveBeenCalledWith(element, "spell-check-2");
+    expect(renderIcon).toHaveBeenCalledWith(element, REFINE_MENU_BAR_ICON_ID);
   });
 
   it("preserves the native Obsidian status item class", () => {
@@ -95,6 +96,7 @@ describe("Refine status bar", () => {
 
   it("communicates when Refine is idle and ready", () => {
     const element = document.createElement("div");
+    element.title = "Previous native tooltip";
     const renderIcon = vi.fn();
     const controller = createRefineStatusBarController({
       element,
@@ -106,10 +108,10 @@ describe("Refine status bar", () => {
 
     const label = "Refine: Ready. Open Refine menu";
     expect(element.dataset.refineState).toBe("idle");
-    expect(element.title).toBe(label);
+    expect(element.hasAttribute("title")).toBe(false);
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.hasAttribute("aria-busy")).toBe(false);
-    expect(renderIcon).toHaveBeenLastCalledWith(element, "spell-check-2");
+    expect(renderIcon).toHaveBeenLastCalledWith(element, REFINE_MENU_BAR_ICON_ID);
   });
 
   it("returns to no-editor status when the editable note closes", () => {
@@ -142,7 +144,7 @@ describe("Refine status bar", () => {
 
     const label = "Refine: Checking current note. Open Refine menu";
     expect(element.dataset.refineState).toBe("checking");
-    expect(element.title).toBe(label);
+    expect(element.hasAttribute("title")).toBe(false);
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.getAttribute("aria-busy")).toBe("true");
     expect(renderIcon).toHaveBeenLastCalledWith(element, "loader-circle");
@@ -166,7 +168,7 @@ describe("Refine status bar", () => {
       "Refine: Checking current note, 2 of 5 units complete, 3 suggestions. " +
       "Open Refine menu";
     expect(element.dataset.refineState).toBe("checking");
-    expect(element.title).toBe(label);
+    expect(element.hasAttribute("title")).toBe(false);
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.getAttribute("aria-busy")).toBeNull();
     expect(element.querySelector(".refine-status-bar__progress")?.textContent).toBe(
@@ -191,9 +193,10 @@ describe("Refine status bar", () => {
 
   it("shows the number of available writing suggestions", () => {
     const element = document.createElement("div");
+    const renderIcon = vi.fn();
     const controller = createRefineStatusBarController({
       element,
-      renderIcon: vi.fn(),
+      renderIcon,
       onActivate: vi.fn(),
     });
 
@@ -201,12 +204,13 @@ describe("Refine status bar", () => {
 
     const label = "Refine: 3 suggestions. Open Refine menu";
     expect(element.dataset.refineState).toBe("suggestions");
-    expect(element.title).toBe(label);
+    expect(element.hasAttribute("title")).toBe(false);
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.querySelector(".refine-status-bar__count")?.textContent).toBe("3");
     expect(
       element.querySelector(".refine-status-bar__count")?.getAttribute("aria-hidden"),
     ).toBe("true");
+    expect(renderIcon).toHaveBeenLastCalledWith(element, REFINE_MENU_BAR_ICON_ID);
   });
 
   it("treats a completed check with no suggestions as ready", () => {
@@ -240,31 +244,37 @@ describe("Refine status bar", () => {
     [
       { type: "disconnected" } as const,
       "Refine: Disconnected. Open Refine menu",
-      "unplug",
+      REFINE_MENU_BAR_ICON_ID,
+      null,
+    ],
+    [
+      { type: "partial", count: 0 } as const,
+      "Refine: Partial check. Open Refine menu",
+      REFINE_MENU_BAR_ICON_ID,
       null,
     ],
     [
       { type: "error" } as const,
       "Refine: Check unavailable. Open Refine menu",
-      "triangle-alert",
+      REFINE_MENU_BAR_ICON_ID,
       null,
     ],
     [
       { type: "checkFailed" } as const,
       "Refine: Check failed. Open Refine menu",
-      "triangle-alert",
+      REFINE_MENU_BAR_ICON_ID,
       null,
     ],
     [
       { type: "incompatible", requiredUpdate: "server" } as const,
       "Refine: Update the Refine app to continue. Open Refine menu",
-      "triangle-alert",
+      REFINE_MENU_BAR_ICON_ID,
       null,
     ],
     [
       { type: "incompatible", requiredUpdate: "client" } as const,
       "Refine: Update the Refine Obsidian plugin to continue. Open Refine menu",
-      "triangle-alert",
+      REFINE_MENU_BAR_ICON_ID,
       null,
     ],
   ])("communicates the %s state", (state, label, icon, ariaBusy) => {
@@ -279,7 +289,7 @@ describe("Refine status bar", () => {
     controller.setState(state);
 
     expect(element.dataset.refineState).toBe(state.type);
-    expect(element.title).toBe(label);
+    expect(element.hasAttribute("title")).toBe(false);
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.getAttribute("aria-busy")).toBe(ariaBusy);
     expect(renderIcon).toHaveBeenLastCalledWith(element, icon);

@@ -1,4 +1,5 @@
 import {
+  addIcon,
   Component,
   MarkdownRenderer,
   MarkdownView,
@@ -14,6 +15,10 @@ import type { EditorView } from "@codemirror/view";
 import { createRefineIntegration } from "./integration/refine-integration";
 import { incompatibleProtocolNotice } from "./obsidian/compatibility";
 import { ObsidianEditorRegistry } from "./obsidian/editor-registry";
+import {
+  REFINE_MENU_BAR_ICON_ID,
+  REFINE_MENU_BAR_ICON_SVG,
+} from "./obsidian/icons";
 import { ObsidianSessionManager } from "./obsidian/session-manager";
 import { plainExplanationRenderer } from "./obsidian/suggestion-card";
 import {
@@ -39,6 +44,7 @@ export default class RefinePlugin extends Plugin {
   private statusState: RefineStatusBarState = { type: "noEditor" };
 
   onload(): void {
+    addIcon(REFINE_MENU_BAR_ICON_ID, REFINE_MENU_BAR_ICON_SVG);
     const statusItem = this.addStatusBarItem();
     this.statusItem = statusItem;
     this.statusBar = createRefineStatusBarController({

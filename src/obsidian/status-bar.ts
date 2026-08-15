@@ -1,6 +1,7 @@
 import type { CheckingProgress } from "../integration/types";
 import type { RequiredCompatibilityUpdate } from "../transport/refine-transport";
 import { incompatibleProtocolStatus } from "./compatibility";
+import { REFINE_MENU_BAR_ICON_ID } from "./icons";
 import type { ObsidianSessionState } from "./session-manager";
 
 export type RefineStatusBarState = (
@@ -68,7 +69,7 @@ export function createRefineStatusBarController(
   element.role = "button";
   element.tabIndex = 0;
   element.setAttribute("aria-live", "polite");
-  renderState(element, renderIcon, "noEditor", NO_EDITOR_LABEL, "spell-check-2");
+  renderState(element, renderIcon, "noEditor", NO_EDITOR_LABEL, REFINE_MENU_BAR_ICON_ID);
   const activateFromPointer = (event: MouseEvent): void => options.onActivate(event);
   const activateFromKeyboard = (event: KeyboardEvent): void => {
     if (event.key !== "Enter" && event.key !== " ") {
@@ -83,9 +84,15 @@ export function createRefineStatusBarController(
   return {
     setState: (state) => {
       if (state.type === "noEditor") {
-        renderState(element, renderIcon, "noEditor", NO_EDITOR_LABEL, "spell-check-2");
+        renderState(
+          element,
+          renderIcon,
+          "noEditor",
+          NO_EDITOR_LABEL,
+          REFINE_MENU_BAR_ICON_ID,
+        );
       } else if (state.type === "idle") {
-        renderState(element, renderIcon, "idle", IDLE_LABEL, "spell-check-2");
+        renderState(element, renderIcon, "idle", IDLE_LABEL, REFINE_MENU_BAR_ICON_ID);
       } else if (state.type === "connecting") {
         renderState(
           element,
@@ -101,7 +108,7 @@ export function createRefineStatusBarController(
           renderIcon,
           "disconnected",
           "Refine: Disconnected. Open Refine menu",
-          "unplug",
+          REFINE_MENU_BAR_ICON_ID,
         );
       } else if (state.type === "checking") {
         renderState(
@@ -118,7 +125,13 @@ export function createRefineStatusBarController(
         appendSuggestionCount(element, state.count, state.progress !== undefined);
       } else if (state.type === "suggestions") {
         if (state.count === 0) {
-          renderState(element, renderIcon, "idle", IDLE_LABEL, "spell-check-2");
+          renderState(
+            element,
+            renderIcon,
+            "idle",
+            IDLE_LABEL,
+            REFINE_MENU_BAR_ICON_ID,
+          );
           return;
         }
         const suffix = state.count === 1 ? "suggestion" : "suggestions";
@@ -127,7 +140,7 @@ export function createRefineStatusBarController(
           renderIcon,
           "suggestions",
           `Refine: ${state.count} ${suffix}. Open Refine menu`,
-          "spell-check-2",
+          REFINE_MENU_BAR_ICON_ID,
         );
         appendSuggestionCount(element, state.count);
       } else if (state.type === "partial") {
@@ -140,7 +153,7 @@ export function createRefineStatusBarController(
           renderIcon,
           "partial",
           `Refine: ${suggestionText}. Open Refine menu`,
-          "triangle-alert",
+          REFINE_MENU_BAR_ICON_ID,
         );
         appendSuggestionCount(element, state.count);
       } else if (state.type === "error") {
@@ -149,7 +162,7 @@ export function createRefineStatusBarController(
           renderIcon,
           "error",
           "Refine: Check unavailable. Open Refine menu",
-          "triangle-alert",
+          REFINE_MENU_BAR_ICON_ID,
         );
       } else if (state.type === "checkFailed") {
         renderState(
@@ -157,7 +170,7 @@ export function createRefineStatusBarController(
           renderIcon,
           "checkFailed",
           "Refine: Check failed. Open Refine menu",
-          "triangle-alert",
+          REFINE_MENU_BAR_ICON_ID,
         );
       } else if (state.type === "incompatible") {
         renderState(
@@ -165,7 +178,7 @@ export function createRefineStatusBarController(
           renderIcon,
           "incompatible",
           incompatibleProtocolStatus(state.requiredUpdate),
-          "triangle-alert",
+          REFINE_MENU_BAR_ICON_ID,
         );
       }
     },
@@ -289,7 +302,7 @@ function renderState(
 ): void {
   element.replaceChildren();
   element.dataset.refineState = state;
-  element.title = label;
+  element.removeAttribute("title");
   element.setAttribute("aria-label", label);
   if (busy) {
     element.setAttribute("aria-busy", "true");
