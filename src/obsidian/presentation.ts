@@ -39,6 +39,7 @@ import {
   rebindSuggestionCard,
   renderSuggestionCard,
   suggestionCardApplyControl,
+  suggestionCardDismissControl,
   type ExplanationRenderer,
 } from "./suggestion-card";
 import {
@@ -893,7 +894,7 @@ class PresentationInteractionController implements PluginValue {
     );
     const card = this.element;
     if (card && this.cardOwnsShortcutEvent(card, event)) {
-      this.applyCardShortcut(card, event, presentation);
+      this.activateCardShortcut(card, event, presentation);
       return;
     }
 
@@ -942,28 +943,27 @@ class PresentationInteractionController implements PluginValue {
       (card.contains(target) || this.view.contentDOM.contains(target));
   }
 
-  private applyCardShortcut(
+  private activateCardShortcut(
     card: HTMLElement,
     event: KeyboardEvent,
     presentation: InstalledPresentation | undefined,
   ): void {
-    if (
-      !presentation ||
-      !matchesSuggestionActionKey(
-        event,
-        presentation.snapshot.interaction.quickApply.applyKey,
-      )
-    ) {
+    if (!presentation) {
       return;
     }
-    const apply = suggestionCardApplyControl(card);
-    if (!apply) {
+    const configuration = presentation.snapshot.interaction.quickApply;
+    const control = matchesSuggestionActionKey(event, configuration.applyKey)
+      ? suggestionCardApplyControl(card)
+      : matchesSuggestionActionKey(event, configuration.dismissKey)
+        ? suggestionCardDismissControl(card)
+        : undefined;
+    if (!control) {
       return;
     }
 
     this.consumeSuggestionActionKey(event);
-    if (!apply.disabled && apply.getAttribute("aria-disabled") !== "true") {
-      apply.click();
+    if (!control.disabled && control.getAttribute("aria-disabled") !== "true") {
+      control.click();
     }
   }
 

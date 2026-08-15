@@ -9,10 +9,29 @@ import type {
   PresentationAppearance,
   PresentationInteraction,
   PresentedSuggestion,
+  SuggestionActionKey,
 } from "../integration/types";
 
 export const PROTOCOL_MAJOR = 2 as const;
-export const PROTOCOL_MINOR = 3 as const;
+export const PROTOCOL_MINOR = 4 as const;
+
+export const SUGGESTION_ACTION_KEYS = [
+  "tab",
+  "escape",
+  "return",
+  "space",
+  "delete",
+  "leftArrow",
+  "rightArrow",
+  "upArrow",
+  "downArrow",
+  "leftShift",
+  "rightShift",
+  "leftOption",
+  "rightOption",
+  "leftControl",
+  "rightControl",
+] as const satisfies readonly SuggestionActionKey[];
 
 export interface IntegrationClientIdentity {
   readonly id: string;
@@ -22,8 +41,12 @@ export interface IntegrationClientIdentity {
 
 export interface HelloFrame {
   readonly type: "hello";
-  readonly protocol: { readonly major: 2; readonly minor: 3 };
+  readonly protocol: { readonly major: 2; readonly minor: 4 };
   readonly client: IntegrationClientIdentity;
+  readonly frontend?: { readonly id: string };
+  readonly hostCapabilities: {
+    readonly interceptableSuggestionActionKeys: readonly SuggestionActionKey[];
+  };
   readonly runId: string;
   readonly launchToken: string;
   readonly capabilities: readonly string[];
@@ -31,7 +54,7 @@ export interface HelloFrame {
 
 export interface WelcomeFrame {
   readonly type: "welcome";
-  readonly protocol: { readonly major: 2; readonly minor: 3 };
+  readonly protocol: { readonly major: 2; readonly minor: 4 };
   readonly serverEpoch: string;
   readonly runResumed: boolean;
   readonly limits: {
@@ -94,7 +117,8 @@ export interface PresentationContent {
     | "checkFailed"
     | "invalidDocument"
     | "unsupportedSource"
-    | "resourceLimit";
+    | "resourceLimit"
+    | "writingCheckEntitlementRequired";
   readonly suggestions: readonly PresentedSuggestion[];
 }
 

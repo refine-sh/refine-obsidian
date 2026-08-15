@@ -217,6 +217,47 @@ describe("RefineIntegration", () => {
     await run;
   });
 
+  it("forwards selection intent against the full authoritative snapshot", async () => {
+    const host = new FakeHost(snapshot("doc:0", "First sentence. Second sentence."));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+
+    host.observations.push({
+      type: "checkRequested",
+      revision: "doc:0",
+      intent: {
+        selection: {
+          sourceId: "document",
+          range: { location: 16, length: 6 },
+        },
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command).toEqual({
+        type: "requestCheck",
+        revision: "doc:0",
+        intent: {
+          selection: {
+            sourceId: "document",
+            range: { location: 16, length: 6 },
+          },
+        },
+      }),
+    );
+    expect(engine.commands[0]?.command).toEqual({
+      type: "openDocument",
+      snapshot: snapshot("doc:0", "First sentence. Second sentence."),
+    });
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
   it("retains the latest engine presentation settings across locally synthesized presentations", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new FakeEngine();
@@ -813,6 +854,37 @@ describe("RefineIntegration", () => {
         reason: "checkFailed",
       }),
     );
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("presents a missing writing-check entitlement without disconnecting", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+
+    engine.emit(unavailableLifecyclePresentation(
+      "entitlement-check",
+      "writingCheckEntitlementRequired",
+    ));
+
+    await vi.waitFor(() =>
+      expect(host.currentPresentation).toMatchObject({
+        state: {
+          type: "unavailable",
+          reason: "writingCheckEntitlementRequired",
+        },
+        suggestions: [],
+      }),
+    );
+    expect(engine.commands.map(({ command }) => command.type)).toEqual([
+      "openDocument",
+    ]);
 
     controller.abort();
     host.observations.close();
@@ -3512,6 +3584,9 @@ function pendingLifecyclePresentation(
 
 function unavailableLifecyclePresentation(
   checkId: string,
+  unavailableReason:
+    | "checkFailed"
+    | "writingCheckEntitlementRequired" = "checkFailed",
 ): Extract<
   ServerEventEnvelope["event"],
   { readonly type: "presentationContentReplaced" }
@@ -3522,7 +3597,7 @@ function unavailableLifecyclePresentation(
     content: {
       documentRevision: "doc:0",
       status: "unavailable",
-      unavailableReason: "checkFailed",
+      unavailableReason,
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
       interaction: DEFAULT_PRESENTATION_INTERACTION,
       suggestions: [],

@@ -19,6 +19,7 @@ import { UnixFrameConnector } from "./unix-frame-connection";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
+  SUGGESTION_ACTION_KEYS,
   isActionRejectionReason,
   type ClientCommand,
   type ClientCommandEnvelope,
@@ -135,6 +136,9 @@ export class RefineTransport {
       type: "hello",
       protocol: { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR },
       client: this.client,
+      hostCapabilities: {
+        interceptableSuggestionActionKeys: SUGGESTION_ACTION_KEYS,
+      },
       runId: options.runId ?? randomUUID(),
       launchToken: endpoint.launchToken,
       capabilities: [],
@@ -513,24 +517,6 @@ function decodePresentationAppearance(
   };
 }
 
-const SUGGESTION_ACTION_KEYS = [
-  "tab",
-  "escape",
-  "return",
-  "space",
-  "delete",
-  "leftArrow",
-  "rightArrow",
-  "upArrow",
-  "downArrow",
-  "leftShift",
-  "rightShift",
-  "leftOption",
-  "rightOption",
-  "leftControl",
-  "rightControl",
-] as const satisfies readonly SuggestionActionKey[];
-
 function decodePresentationInteraction(value: unknown): PresentationInteraction {
   const interaction = requireRecord(value, "presentation.interaction");
   const quickApply = requireRecord(
@@ -795,7 +781,8 @@ function isUnavailableReason(
   | "checkFailed"
   | "invalidDocument"
   | "unsupportedSource"
-  | "resourceLimit";
+  | "resourceLimit"
+  | "writingCheckEntitlementRequired";
 function isUnavailableReason(value: unknown): boolean {
   return (
     value === "disconnected" ||
@@ -803,7 +790,8 @@ function isUnavailableReason(value: unknown): boolean {
     value === "checkFailed" ||
     value === "invalidDocument" ||
     value === "unsupportedSource" ||
-    value === "resourceLimit"
+    value === "resourceLimit" ||
+    value === "writingCheckEntitlementRequired"
   );
 }
 

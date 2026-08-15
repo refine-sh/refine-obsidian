@@ -412,6 +412,42 @@ describe("Obsidian suggestion Apply shortcuts", () => {
     finishApply?.({ status: "completed" });
   });
 
+  it("uses a card's configured Dismiss key for an explicit dismissal", async () => {
+    const { host } = createHost("A sentence.");
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    const dismiss = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(
+      snapshot({
+        interaction: interaction({
+          enabled: false,
+          applyKey: "tab",
+          dismissKey: "escape",
+        }),
+        suggestions: [suggestion({
+          availableActions: ["dismiss", "apply"],
+        })],
+      }),
+      actions({ apply, dismiss }),
+    );
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+    const dismissButton = document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="dismiss"]',
+    );
+
+    const escape = keydown("Escape", "Escape");
+    dismissButton?.dispatchEvent(escape);
+
+    expect(escape.defaultPrevented).toBe(true);
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(dismiss).toHaveBeenCalledWith("suggestion");
+    expect(apply).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(document.querySelector(".refine-tooltip--manual")).toBeNull()
+    );
+  });
+
   it("uses the latest synchronized card key and rebound Apply action", () => {
     const { host } = createHost("A sentence.");
     const oldApply = vi.fn(async () => ({ status: "completed" as const }));

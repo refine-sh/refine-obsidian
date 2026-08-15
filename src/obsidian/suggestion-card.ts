@@ -24,6 +24,7 @@ export const plainExplanationRenderer: ExplanationRenderer = (
 const cardCleanup = new WeakMap<HTMLElement, () => void>();
 const cardClose = new WeakMap<HTMLElement, () => void>();
 const cardApplyControl = new WeakMap<HTMLElement, HTMLButtonElement>();
+const cardDismissControl = new WeakMap<HTMLElement, HTMLButtonElement>();
 let suggestionCardLabelSequence = 0;
 let suggestionExplanationLabelSequence = 0;
 
@@ -62,6 +63,12 @@ export function suggestionCardApplyControl(
   card: HTMLElement,
 ): HTMLButtonElement | undefined {
   return cardApplyControl.get(card);
+}
+
+export function suggestionCardDismissControl(
+  card: HTMLElement,
+): HTMLButtonElement | undefined {
+  return cardDismissControl.get(card);
 }
 
 function bindSuggestionCard(
@@ -117,6 +124,14 @@ function bindSuggestionCard(
   } else {
     cardApplyControl.delete(card);
   }
+  const dismiss = actionRow.querySelector<HTMLButtonElement>(
+    ':scope > button[data-refine-action="dismiss"]',
+  );
+  if (dismiss) {
+    cardDismissControl.set(card, dismiss);
+  } else {
+    cardDismissControl.delete(card);
+  }
   card.replaceChildren(...(label ? [label] : []));
   card.append(
     header.element,
@@ -136,6 +151,7 @@ export function disposeSuggestionCard(card: HTMLElement): void {
   cardCleanup.delete(card);
   cardClose.delete(card);
   cardApplyControl.delete(card);
+  cardDismissControl.delete(card);
 }
 
 function createSuggestionCardShell(

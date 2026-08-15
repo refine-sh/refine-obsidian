@@ -20,10 +20,20 @@ export type HostObservation =
       readonly intent?: CheckIntent;
     };
 
-export interface CheckIntent {
-  readonly forcedLanguageTag?: string;
-  readonly sourceIds?: readonly SourceID[];
-}
+export type CheckIntent =
+  | {
+      readonly forcedLanguageTag?: string;
+      readonly sourceIds?: readonly SourceID[];
+      readonly selection?: never;
+    }
+  | {
+      readonly forcedLanguageTag?: string;
+      readonly sourceIds?: never;
+      readonly selection: {
+        readonly sourceId: SourceID;
+        readonly range: UTF16Range;
+      };
+    };
 
 export type HostRevisionValidation =
   | { readonly status: "current" }
@@ -151,7 +161,8 @@ export interface PresentationSnapshot {
           | "checkFailed"
           | "invalidDocument"
           | "unsupportedSource"
-          | "resourceLimit";
+          | "resourceLimit"
+          | "writingCheckEntitlementRequired";
       }
     | { readonly type: "closed" };
   readonly suggestions: readonly PresentedSuggestion[];

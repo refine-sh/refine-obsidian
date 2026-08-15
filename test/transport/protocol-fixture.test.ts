@@ -22,6 +22,7 @@ interface ProtocolFixture {
   readonly rejection: HandshakeRejectedFrame;
   readonly welcome: WelcomeFrame;
   readonly openDocument: ClientCommandEnvelope;
+  readonly selectionCheck: ClientCommandEnvelope;
   readonly checkingPresentation: ServerEventEnvelope;
   readonly presentation: ServerEventEnvelope;
   readonly explanationStarted: ServerEventEnvelope;
@@ -36,7 +37,7 @@ describe("integration protocol V2 golden transcript", () => {
     expect(fixture.rejection).toEqual({
       type: "rejected",
       reason: "incompatibleProtocol",
-      protocol: { major: 2, minor: 3 },
+      protocol: { major: 2, minor: 4 },
     });
     expect(fixture.checkingPresentation).toMatchObject({
       event: {
@@ -115,7 +116,7 @@ describe("integration protocol V2 golden transcript", () => {
         launchToken: fixture.hello.launchToken,
         serverEpoch: fixture.welcome.serverEpoch,
         protocolMajor: 2,
-        protocolMinor: 3,
+        protocolMinor: 4,
         pid: 123,
       }),
     };
@@ -134,6 +135,11 @@ describe("integration protocol V2 golden transcript", () => {
       fixture.openDocument.id,
     );
     expect(sent[1]).toEqual(fixture.openDocument);
+    await session.send(
+      fixture.selectionCheck.command,
+      fixture.selectionCheck.id,
+    );
+    expect(sent[2]).toEqual(fixture.selectionCheck);
 
     const events = session.events(new AbortController().signal)[Symbol.asyncIterator]();
     frames.push(fixture.checkingPresentation);

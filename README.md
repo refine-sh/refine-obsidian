@@ -36,7 +36,7 @@ code:
 External editor integrations should reuse the protocol and integration state
 machine. They only replace the host adapter and native presentation.
 
-## V2.3 behavior
+## V2.4 behavior
 
 - Automatic writing-check scheduling and policy live in the Refine app.
 - **Refine: Check current note** requests an immediate check from the Command
@@ -51,8 +51,12 @@ machine. They only replace the host adapter and native presentation.
   markers follow Refine's appearance settings without requiring another check.
 - Quick Apply enablement, activation style, and interaction shortcuts follow
   Refine's settings without requiring another check. An open suggestion card
-  also accepts Refine's configured Apply key, even when cursor activation is
-  disabled.
+  also accepts Refine's configured Apply and Dismiss keys, even when cursor
+  activation is disabled. Dismiss on an open card records an explicit
+  dismissal; Dismiss during cursor activation alone only clears activation.
+- Native and Obsidian writing checks use the same active-trial-or-license
+  entitlement. When it is missing, the session stays connected and exposes an
+  actionable unavailable state without starting a check.
 - Suggestion cards show the check language and model attribution supplied by
   Refine. Explain streams Refine's native Markdown explanation and identifies
   its independently selected model.

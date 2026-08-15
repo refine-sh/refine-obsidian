@@ -24,7 +24,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, sent, () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 3 },
+        protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -43,8 +43,27 @@ describe("Refine transport handshake", () => {
     });
     expect(sent[0]).toEqual({
       type: "hello",
-      protocol: { major: 2, minor: 3 },
+      protocol: { major: 2, minor: 4 },
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      hostCapabilities: {
+        interceptableSuggestionActionKeys: [
+          "tab",
+          "escape",
+          "return",
+          "space",
+          "delete",
+          "leftArrow",
+          "rightArrow",
+          "upArrow",
+          "downArrow",
+          "leftShift",
+          "rightShift",
+          "leftOption",
+          "rightOption",
+          "leftControl",
+          "rightControl",
+        ],
+      },
       runId: "run-1",
       launchToken: "secret-1",
       capabilities: [],
@@ -257,7 +276,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 3 },
+        protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-2",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -276,8 +295,8 @@ describe("Refine transport handshake", () => {
   });
 
   it.each([
-    [{ major: 2, minor: 0 }, "server"],
-    [{ major: 2, minor: 4 }, "client"],
+    [{ major: 2, minor: 3 }, "server"],
+    [{ major: 2, minor: 5 }, "client"],
   ] as const)(
     "reports which component must be updated for welcome protocol %s",
     async (protocol, requiredUpdate) => {
@@ -335,8 +354,8 @@ describe("Refine transport handshake", () => {
   });
 
   it.each([
-    [{ major: 2, minor: 0 }, "server"],
-    [{ major: 2, minor: 4 }, "client"],
+    [{ major: 2, minor: 3 }, "server"],
+    [{ major: 2, minor: 5 }, "client"],
   ] as const)(
     "reports which component must be updated for a rejected protocol %s",
     async (protocol, requiredUpdate) => {
@@ -418,7 +437,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 3 },
+        protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -482,7 +501,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 3 },
+        protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -651,12 +670,12 @@ describe("Refine transport handshake", () => {
     await fixture.session.close();
   });
 
-  it("decodes checkFailed as a protocol-v2 unavailable reason", async () => {
+  it("decodes Protocol 2.4 unavailable reasons and rejects unknown ones", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 3 },
+        protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -717,6 +736,46 @@ describe("Refine transport handshake", () => {
       event: {
         type: "presentationContentReplaced",
         checkId: "check-2",
+        content: {
+          documentRevision: "doc:0",
+          status: "unavailable",
+          unavailableReason: "writingCheckEntitlementRequired",
+          appearance: {
+            highlight: {
+              style: "underline",
+              grammarColor: "#FF2D55",
+              fluencyColor: "#007AFF",
+            },
+            diff: {
+              additionColor: "#34C759",
+              deletionColor: "#FF3B30",
+              showHiddenWhitespace: true,
+            },
+          },
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
+          suggestions: [],
+        },
+      },
+    });
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        event: {
+          type: "presentationContentReplaced",
+          content: {
+            status: "unavailable",
+            unavailableReason: "writingCheckEntitlementRequired",
+          },
+        },
+      },
+    });
+
+    frames.push({
+      type: "event",
+      sequence: 3,
+      epoch: "epoch-1",
+      event: {
+        type: "presentationContentReplaced",
+        checkId: "check-3",
         content: {
           documentRevision: "doc:0",
           status: "unavailable",
@@ -788,7 +847,7 @@ describe("Refine transport handshake", () => {
             sent.push(value);
             frames.push({
               type: "welcome",
-              protocol: { major: 2, minor: 3 },
+              protocol: { major: 2, minor: 4 },
               serverEpoch: "epoch-1",
               runResumed: false,
               limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -847,7 +906,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 3 },
+        protocol: { major: 2, minor: 4 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -884,7 +943,7 @@ function endpointLocator(): EndpointLocator {
       launchToken: "secret-1",
       serverEpoch: "epoch-1",
       protocolMajor: 2,
-      protocolMinor: 3,
+      protocolMinor: 4,
       pid: 123,
     }),
   };
@@ -918,7 +977,7 @@ async function connectedEventFixture() {
   const connector = connectionConnector(frames, [], () => {
     frames.push({
       type: "welcome",
-      protocol: { major: 2, minor: 3 },
+      protocol: { major: 2, minor: 4 },
       serverEpoch: "epoch-1",
       runResumed: false,
       limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
