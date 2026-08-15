@@ -15,6 +15,7 @@ import { createRefineIntegration } from "./integration/refine-integration";
 import { incompatibleProtocolNotice } from "./obsidian/compatibility";
 import { ObsidianEditorRegistry } from "./obsidian/editor-registry";
 import { ObsidianSessionManager } from "./obsidian/session-manager";
+import { plainExplanationRenderer } from "./obsidian/suggestion-card";
 import {
   createRefineStatusBarController,
   type RefineStatusBarActivationEvent,
@@ -61,6 +62,7 @@ export default class RefinePlugin extends Plugin {
       integration,
       renderExplanation: (markdown, element) => {
         const component = new Component();
+        let active = true;
         component.load();
         const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
         void MarkdownRenderer.render(
@@ -70,9 +72,14 @@ export default class RefinePlugin extends Plugin {
           sourcePath,
           component,
         ).catch(() => {
-          element.textContent = markdown;
+          if (active) {
+            plainExplanationRenderer(markdown, element);
+          }
         });
-        return () => component.unload();
+        return () => {
+          active = false;
+          component.unload();
+        };
       },
       onError: (error) => {
         console.error("Refine integration stopped");

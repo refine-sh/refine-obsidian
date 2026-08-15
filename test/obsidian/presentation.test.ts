@@ -442,6 +442,270 @@ describe("Obsidian presentation", () => {
     );
   });
 
+  it("uses compact spacing and controls without changing action order", async () => {
+    vi.useFakeTimers();
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "compact-card",
+      );
+      const baseSnapshot = presentation("compact-card:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["apply", "dismiss", "explain", "report"],
+          })),
+        },
+        actions(),
+      );
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+
+      const buttons = [...document.querySelectorAll<HTMLButtonElement>(
+        ".refine-tooltip button",
+      )];
+      expect(buttons.map((button) => button.textContent)).toEqual([
+        "Explain",
+        "Dismiss",
+        "Report",
+        "Apply",
+      ]);
+      expect(buttons.every((button) =>
+        button.classList.contains("refine-tooltip__action")
+      )).toBe(true);
+      expect(buttons.map((button) =>
+        button.classList.contains("refine-tooltip__action--text")
+      ))
+        .toEqual([true, true, true, false]);
+
+      const rules = Array.from(style.sheet?.cssRules ?? [])
+        .filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+      const rule = (selector: string): CSSStyleRule | undefined =>
+        rules.find((candidate) => candidate.selectorText === selector);
+      expect(rule(".refine-tooltip")?.style.gap).toBe("var(--size-4-1)");
+      expect(rule(".refine-tooltip")?.style.padding).toBe("var(--size-4-2)");
+      expect(rule(".refine-tooltip__header")?.style.gap).toBe(
+        "var(--size-4-1)",
+      );
+      expect(rule(".refine-tooltip__actions")?.style.columnGap).toBe(
+        "var(--size-4-2)",
+      );
+      expect(rule(".refine-tooltip__actions")?.style.rowGap).toBe(
+        "var(--size-4-1)",
+      );
+      expect(rule(".refine-tooltip__explanation-section")?.style.gap).toBe(
+        "var(--size-4-1)",
+      );
+      expect(
+        rule(".refine-tooltip__explanation-section")?.style.paddingBlockStart,
+      ).toBe("var(--size-4-1)");
+      const actionRule = rule(
+        ".refine-tooltip button.refine-tooltip__action",
+      );
+      expect(actionRule?.style.minBlockSize).toBe("max(1.5rem, 24px)");
+      expect(actionRule?.style.blockSize).toBe("auto");
+      expect(actionRule?.style.paddingBlock).toBe("0px");
+      expect(actionRule?.style.paddingInline).toBe("var(--size-4-2)");
+      expect(actionRule?.style.fontSize).toBe("var(--font-smallest)");
+      const textActionRule = rule(
+        ".refine-tooltip button.refine-tooltip__action--text",
+      );
+      expect(textActionRule?.style.getPropertyValue("--text-color")).toBe(
+        "var(--text-muted)",
+      );
+      expect(textActionRule?.style.padding).toBe("0px");
+      expect(textActionRule?.style.backgroundColor).toBe("transparent");
+      expect(textActionRule?.style.boxShadow).toBe("none");
+    } finally {
+      style.remove();
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders Markdown explanation lists flush without removing their semantics", async () => {
+    vi.useFakeTimers();
+    const style = document.createElement("style");
+    style.textContent = `${readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    )}
+      .markdown-rendered ul {
+        margin-inline-start: 3ch;
+        padding-inline-start: 3ch;
+      }
+      .markdown-rendered ul > li {
+        margin-inline-start: 3ch;
+      }`;
+    document.head.append(style);
+    const renderExplanation = vi.fn((_markdown: string, element: HTMLElement) => {
+      element.classList.add("markdown-rendered");
+      const list = document.createElement("ul");
+      list.append("\n");
+      for (const text of ["First reason.", "Second reason."]) {
+        const item = document.createElement("li");
+        const paragraph = document.createElement("p");
+        paragraph.textContent = text;
+        item.append(paragraph);
+        list.append(item, "\n");
+      }
+      element.append(list);
+    });
+    async function* explain(): AsyncIterable<ExplanationUpdate> {
+      yield {
+        status: "started",
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "rtl",
+          modelDisplayName: "On-Device (Gemma)",
+        },
+      };
+      yield { status: "completed", text: "- First reason.\n- Second reason." };
+    }
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "flush-explanation",
+        [],
+        renderExplanation,
+      );
+      const baseSnapshot = presentation("flush-explanation:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["explain"],
+          })),
+        },
+        actions({ explain }),
+      );
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+      document.querySelector<HTMLButtonElement>(
+        ".refine-tooltip__action",
+      )?.click();
+      await vi.waitFor(() => expect(renderExplanation).toHaveBeenCalledOnce());
+
+      const explanation = document.querySelector<HTMLElement>(
+        ".refine-tooltip__explanation",
+      );
+      const list = explanation?.querySelector<HTMLUListElement>("ul");
+      const items = list?.querySelectorAll("li");
+      expect(explanation?.dir).toBe("rtl");
+      expect(explanation?.tabIndex).toBe(0);
+      expect(explanation?.getAttribute("role")).toBe("region");
+      const explanationLabel = explanation?.getAttribute("aria-labelledby");
+      expect(explanationLabel).toBeTruthy();
+      expect(document.getElementById(explanationLabel!)?.textContent).toBe(
+        "Explanation - English (American)",
+      );
+      explanation?.focus();
+      expect(document.activeElement).toBe(explanation);
+      expect(list).not.toBeNull();
+      expect(items).toHaveLength(2);
+      expect(list?.firstChild?.nodeValue).toBe("\n");
+      expect(list?.lastChild?.nodeValue).toBe("\n");
+      expect(getComputedStyle(explanation!).whiteSpace).toBe("normal");
+      expect(getComputedStyle(list!).whiteSpace).toBe("normal");
+      expect(getComputedStyle(list!).marginInlineStart).toBe("0px");
+      expect(getComputedStyle(list!).paddingInlineStart).toBe("0px");
+      expect(getComputedStyle(list!).listStylePosition).toBe("inside");
+      expect(getComputedStyle(items![0]!).marginInlineStart).toBe("0px");
+      expect(getComputedStyle(items![0]!.querySelector("p")!).marginBlockStart)
+        .toBe("0");
+      expect(getComputedStyle(items![0]!.querySelector("p")!).marginBlockEnd)
+        .toBe("0");
+      const rules = Array.from(style.sheet?.cssRules ?? [])
+        .filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+      const explanationRule = rules.find((rule) =>
+        rule.selectorText === ".refine-tooltip__explanation"
+      );
+      expect(explanationRule?.style.maxBlockSize).toBe("min(12rem, 40vh)");
+      expect(explanationRule?.style.overflowY).toBe("auto");
+      const explanationStatus = document.querySelector<HTMLElement>(
+        ".refine-tooltip__explanation-section .refine-tooltip__status",
+      );
+      const feedbackStatus = document.querySelector<HTMLElement>(
+        ".refine-tooltip__feedback-status",
+      );
+      expect(getComputedStyle(explanationStatus!).display).toBe("none");
+      expect(getComputedStyle(feedbackStatus!).display).toBe("none");
+      explanationStatus!.textContent = "Explaining…";
+      feedbackStatus!.textContent = "Thanks for the report.";
+      expect(getComputedStyle(explanationStatus!).display).toBe("block");
+      expect(getComputedStyle(feedbackStatus!).display).toBe("block");
+      expect(explanation?.querySelector(".refine-tooltip__actions")).toBeNull();
+      expect(document.querySelector(".refine-tooltip__actions")).not.toBeNull();
+    } finally {
+      style.remove();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves line breaks in the plain explanation fallback", async () => {
+    vi.useFakeTimers();
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    async function* explain(): AsyncIterable<ExplanationUpdate> {
+      yield {
+        status: "started",
+        attribution: {
+          languageDisplayName: "English (American)",
+          textDirection: "ltr",
+          modelDisplayName: "On-Device (Gemma)",
+        },
+      };
+      yield { status: "completed", text: "First line.\nSecond line." };
+    }
+    try {
+      const { host, view } = createHost(
+        "[create an link](URL)or",
+        "plain-explanation",
+      );
+      const baseSnapshot = presentation("plain-explanation:0");
+      await host.present(
+        {
+          ...baseSnapshot,
+          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+            ...suggestion,
+            availableActions: ["explain"],
+          })),
+        },
+        actions({ explain }),
+      );
+      await hover(view, document.querySelector(".refine-suggestion"), 9);
+      document.querySelector<HTMLButtonElement>(
+        ".refine-tooltip__action",
+      )?.click();
+
+      await vi.waitFor(() => expect(
+        document.querySelector(".refine-tooltip__explanation-plain"),
+      ).not.toBeNull());
+      const explanation = document.querySelector<HTMLElement>(
+        ".refine-tooltip__explanation",
+      );
+      const plain = explanation?.querySelector<HTMLElement>(
+        ".refine-tooltip__explanation-plain",
+      );
+      expect(explanation?.textContent).toBe("First line.\nSecond line.");
+      expect(getComputedStyle(explanation!).whiteSpace).toBe("normal");
+      expect(getComputedStyle(plain!).whiteSpace).toBe("pre-wrap");
+    } finally {
+      style.remove();
+      vi.useRealTimers();
+    }
+  });
+
   it("makes Explain retryable when it is rejected before starting", async () => {
     let attempt = 0;
     async function* rejected(): AsyncIterable<ExplanationUpdate> {
@@ -486,6 +750,12 @@ describe("Obsidian presentation", () => {
       card?.querySelector(".refine-tooltip__explanation-section .refine-tooltip__status")
         ?.textContent,
     ).toBe("No explanation available.");
+    const emptyExplanation = card?.querySelector<HTMLElement>(
+      ".refine-tooltip__explanation",
+    );
+    expect(emptyExplanation?.tabIndex).toBe(-1);
+    expect(emptyExplanation?.hasAttribute("role")).toBe(false);
+    expect(emptyExplanation?.hasAttribute("aria-labelledby")).toBe(false);
     expect(document.querySelector(".refine-tooltip")).toBe(card);
 
     explainButton?.click();
@@ -1090,12 +1360,9 @@ describe("Obsidian presentation", () => {
     },
   );
 
-  it.each([
-    ["underline", "solid"],
-    ["dashedUnderline", "dashed"],
-  ] as const)(
-    "keeps the Refine %s color and style when Live Preview owns the text color",
-    async (highlightStyle, decorationStyle) => {
+  it.each(["underline", "dashedUnderline"] as const)(
+    "renders the Refine %s with a separate pseudo-element when Live Preview owns the text color",
+    async (highlightStyle) => {
       const style = document.createElement("style");
       style.textContent = `${readFileSync(
         resolve(import.meta.dirname, "../../styles.css"),
@@ -1127,11 +1394,33 @@ describe("Obsidian presentation", () => {
         const refineComputed = getComputedStyle(grammar!);
         expect(livePreviewComputed.color).toBe("rgb(118, 74, 188)");
         expect(livePreviewComputed.textDecorationLine).toBe("none");
-        // The custom property remains available to highlight mode while the
-        // inline longhand makes the underline authoritative over host and theme CSS.
+        expect(refineComputed.textDecorationLine).toBe("none");
         expect(refineComputed.getPropertyValue("--refine-suggestion-color")).toBe("#AABBCC");
-        expect(refineComputed.textDecorationColor).toBe("rgb(170, 187, 204)");
-        expect(refineComputed.textDecorationStyle).toBe(decorationStyle);
+
+        const rules = Array.from(style.sheet?.cssRules ?? [])
+          .filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+        const sharedUnderlineRule = rules.find((rule) =>
+          rule.selectorText.includes(".refine-suggestion--underline::after") &&
+          rule.selectorText.includes(".refine-suggestion--dashedUnderline::after")
+        );
+        expect(sharedUnderlineRule?.style.position).toBe("absolute");
+        expect(sharedUnderlineRule?.style.pointerEvents).toBe("none");
+        expect(sharedUnderlineRule?.style.content).toBe('""');
+        expect(sharedUnderlineRule?.style.insetBlockEnd).toBe("-2px");
+        expect(sharedUnderlineRule?.style.blockSize).toBe("1.5px");
+        expect(sharedUnderlineRule?.style.backgroundColor).toBe(
+          "var(--refine-suggestion-color)",
+        );
+        expect(sharedUnderlineRule?.style.borderRadius).toBe("999px");
+        if (highlightStyle === "dashedUnderline") {
+          const dashedRule = rules.find((rule) =>
+            rule.selectorText === ".refine-suggestion--dashedUnderline::after"
+          );
+          expect(dashedRule?.style.backgroundColor).toBe("transparent");
+          expect(dashedRule?.style.backgroundImage).toContain(
+            "repeating-linear-gradient",
+          );
+        }
       } finally {
         style.remove();
       }
@@ -1162,8 +1451,8 @@ describe("Obsidian presentation", () => {
       const computed = getComputedStyle(grammar!);
 
       expect(computed.color).toBe("rgb(42, 42, 42)");
+      expect(computed.textDecorationLine).toBe("none");
       expect(computed.getPropertyValue("--refine-suggestion-color")).toBe("#AABBCC");
-      expect(computed.textDecorationColor).toBe("rgb(170, 187, 204)");
     } finally {
       style.remove();
     }

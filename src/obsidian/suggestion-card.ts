@@ -15,11 +15,15 @@ export const plainExplanationRenderer: ExplanationRenderer = (
   markdown,
   element,
 ) => {
-  element.textContent = markdown;
+  const content = element.ownerDocument.createElement("div");
+  content.className = "refine-tooltip__explanation-plain";
+  content.textContent = markdown;
+  element.replaceChildren(content);
 };
 
 const cardCleanup = new WeakMap<HTMLElement, () => void>();
 let suggestionCardLabelSequence = 0;
+let suggestionExplanationLabelSequence = 0;
 
 export function renderSuggestionCard(
   ownerDocument: Document,
@@ -181,6 +185,8 @@ class SuggestionExplanationController {
     header.className = "refine-tooltip__header";
     this.title = ownerDocument.createElement("span");
     this.title.className = "refine-tooltip__caption";
+    this.title.id =
+      `refine-tooltip-explanation-label-${++suggestionExplanationLabelSequence}`;
     this.model = ownerDocument.createElement("span");
     this.model.className = "refine-tooltip__caption refine-tooltip__model";
     header.append(this.title, this.model);
@@ -210,6 +216,15 @@ class SuggestionExplanationController {
     this.explanationCleanup?.();
     this.explanationCleanup = undefined;
     this.explanation.replaceChildren();
+    if (text.trim().length > 0) {
+      this.explanation.tabIndex = 0;
+      this.explanation.setAttribute("role", "region");
+      this.explanation.setAttribute("aria-labelledby", this.title.id);
+    } else {
+      this.explanation.removeAttribute("tabindex");
+      this.explanation.removeAttribute("role");
+      this.explanation.removeAttribute("aria-labelledby");
+    }
     this.explanationCleanup =
       this.renderExplanation(text, this.explanation) || undefined;
   }
@@ -418,6 +433,10 @@ function actionButton(
 ): HTMLButtonElement {
   const button = ownerDocument.createElement("button");
   button.type = "button";
+  button.classList.add("refine-tooltip__action");
+  if (action !== "apply") {
+    button.classList.add("refine-tooltip__action--text");
+  }
   button.textContent = `${action[0]?.toUpperCase() ?? ""}${action.slice(1)}`;
   button.addEventListener("click", () => {
     void run(button).catch(() => {

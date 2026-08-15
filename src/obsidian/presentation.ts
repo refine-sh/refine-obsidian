@@ -1079,7 +1079,6 @@ function buildDecorations(
               style: [
                 "--no-tooltip: true",
                 `--refine-suggestion-color: ${color}`,
-                `text-decoration-color: ${color} !important`,
               ].join("; "),
               tabindex: "0",
             },

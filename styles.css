@@ -1,16 +1,27 @@
 .refine-suggestion {
-  text-decoration-line: underline;
-  text-decoration-color: var(--refine-suggestion-color) !important;
-  text-decoration-thickness: 1.5px;
-  text-underline-offset: 3px;
+  position: relative;
+  text-decoration: none !important;
 }
 
-.refine-suggestion--underline {
-  text-decoration-style: solid !important;
+.refine-suggestion--underline::after,
+.refine-suggestion--dashedUnderline::after {
+  position: absolute;
+  inset-block-end: -2px;
+  inset-inline: 0;
+  block-size: 1.5px;
+  pointer-events: none;
+  content: "";
+  background-color: var(--refine-suggestion-color);
+  border-radius: 999px;
 }
 
-.refine-suggestion--dashedUnderline {
-  text-decoration-style: dashed !important;
+.refine-suggestion--dashedUnderline::after {
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--refine-suggestion-color) 0 3px,
+    transparent 3px 5px
+  );
 }
 
 .cm-editor .cm-content .refine-suggestion--underline .cm-underline,
@@ -50,11 +61,11 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: var(--size-4-2);
+  gap: var(--size-4-1);
   inline-size: max-content;
   min-inline-size: min(20rem, calc(100vw - 2rem));
   max-inline-size: min(28rem, calc(100vw - 2rem));
-  padding: var(--size-4-3);
+  padding: var(--size-4-2);
   color: var(--text-normal);
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
@@ -82,13 +93,64 @@
 .refine-tooltip__diff,
 .refine-tooltip__explanation {
   overflow-wrap: anywhere;
+}
+
+.refine-tooltip__diff,
+.refine-tooltip__explanation-plain {
   white-space: pre-wrap;
+}
+
+.refine-tooltip__explanation {
+  max-block-size: min(12rem, 40vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  white-space: normal;
+}
+
+.refine-tooltip__explanation:focus-visible {
+  outline: 2px solid var(--background-modifier-border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-s);
+}
+
+.refine-tooltip .refine-tooltip__explanation > :first-child {
+  margin-block-start: 0;
+}
+
+.refine-tooltip .refine-tooltip__explanation > :last-child {
+  margin-block-end: 0;
+}
+
+.refine-tooltip .refine-tooltip__explanation :is(ul, ol) {
+  padding-inline-start: 0;
+  margin-block: 0;
+  margin-inline-start: 0;
+  white-space: normal;
+  list-style-position: inside;
+}
+
+.refine-tooltip .refine-tooltip__explanation :is(ul, ol) :is(ul, ol) {
+  padding-inline-start: 1rem;
+}
+
+.refine-tooltip .refine-tooltip__explanation :is(ul, ol) > li {
+  padding-inline-start: 0;
+  margin-inline-start: 0;
+}
+
+.refine-tooltip .refine-tooltip__explanation li + li {
+  margin-block-start: var(--size-4-1);
+}
+
+.refine-tooltip .refine-tooltip__explanation li > p:first-child {
+  display: inline;
+  margin-block: 0;
 }
 
 .refine-tooltip__header {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--size-4-2);
+  gap: var(--size-4-1);
   align-items: baseline;
 }
 
@@ -110,8 +172,8 @@
 .refine-tooltip__explanation-section {
   display: flex;
   flex-direction: column;
-  gap: var(--size-4-2);
-  padding-block-start: var(--size-4-2);
+  gap: var(--size-4-1);
+  padding-block-start: var(--size-4-1);
   border-block-start: 1px solid var(--background-modifier-border);
 }
 
@@ -122,6 +184,10 @@
 .refine-tooltip__status {
   color: var(--text-muted);
   font-size: var(--font-smallest);
+}
+
+.refine-tooltip__status:empty {
+  display: none;
 }
 
 .refine-tooltip__delete {
@@ -155,7 +221,42 @@
 .refine-tooltip__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--size-4-1);
+  column-gap: var(--size-4-2);
+  row-gap: var(--size-4-1);
+}
+
+.refine-tooltip button.refine-tooltip__action {
+  block-size: auto;
+  min-block-size: max(1.5rem, 24px);
+  padding-block: 0;
+  padding-inline: var(--size-4-2);
+  font-size: var(--font-smallest);
+  line-height: 1.2;
+}
+
+.refine-tooltip button.refine-tooltip__action--text {
+  --text-color: var(--text-muted);
+
+  padding: 0;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.refine-tooltip button.refine-tooltip__action--text.mobile-tap {
+  --text-color: var(--text-normal);
+
+  background-color: transparent;
+  box-shadow: none;
+}
+
+@media (hover: hover) {
+  .refine-tooltip button.refine-tooltip__action--text:hover,
+  .refine-tooltip button.refine-tooltip__action--text:active {
+    --text-color: var(--text-normal);
+
+    background-color: transparent;
+    box-shadow: none;
+  }
 }
 
 .refine-tooltip__actions button:last-child {
