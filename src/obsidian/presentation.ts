@@ -8,11 +8,13 @@ import {
   type VirtualElement,
 } from "@floating-ui/dom";
 import {
+  type EditorSelection,
   StateEffect,
   StateField,
   type ChangeDesc,
   type Extension,
   type Range,
+  type Transaction,
 } from "@codemirror/state";
 import {
   Decoration,
@@ -37,15 +39,25 @@ import {
   renderSuggestionCard,
   type ExplanationRenderer,
 } from "./suggestion-card";
+import {
+  quickApplyCandidate,
+  suggestionActionKeyLabel,
+  suggestionActionKeyMatches,
+} from "./quick-apply";
 
 export type { ExplanationRenderer } from "./suggestion-card";
 
-interface InstalledPresentation {
+interface LivePresentationInput {
   readonly type: "live";
   readonly snapshot: PresentationSnapshot;
   readonly actions: SuggestionActions;
-  readonly decorations: DecorationSet;
   readonly renderExplanation: ExplanationRenderer;
+}
+
+interface InstalledPresentation extends LivePresentationInput {
+  readonly decorations: DecorationSet;
+  readonly activeQuickApplySuggestionId: string | undefined;
+  readonly canAutoActivateQuickApply: boolean;
 }
 
 interface ProvisionalSuggestion {
@@ -71,6 +83,12 @@ interface SuggestionHit {
   readonly suggestionId: string;
   readonly match?: SuggestionRangeMatch;
   readonly trigger?: HTMLElement;
+}
+
+interface ManualSuggestionTrigger {
+  readonly element: HTMLElement;
+  readonly suggestionId: string;
+  readonly position: number | undefined;
 }
 
 interface SuggestionRangeMatch {
@@ -103,8 +121,9 @@ const suggestionHoverBridgeBufferPx = 6;
 const suggestionCardViewportGutterPx = 16;
 const suggestionCardGapPx = 4;
 
-const replacePresentation = StateEffect.define<InstalledPresentation | undefined>();
+const replacePresentation = StateEffect.define<LivePresentationInput | undefined>();
 const clearLivePresentationEffect = StateEffect.define<null>();
+const clearQuickApplyActivationEffect = StateEffect.define<null>();
 
 const presentationField = StateField.define<PresentationState | undefined>({
   create: () => undefined,
@@ -114,6 +133,9 @@ const presentationField = StateField.define<PresentationState | undefined>({
     let next = documentTextChanged
       ? provisionalPresentation(value, transaction.changes)
       : value;
+    if (!documentTextChanged && transaction.selection !== undefined) {
+      next = selectionUpdatedPresentation(next, transaction);
+    }
     for (const effect of transaction.effects) {
       if (effect.is(replacePresentation)) {
         // Pending is lifecycle state only. Keep inert mapped pixels until the
@@ -124,12 +146,30 @@ const presentationField = StateField.define<PresentationState | undefined>({
           effect.value.snapshot.suggestions.length === 0 &&
           next?.type === "provisional"
             ? next
-            : effect.value;
+            : effect.value === undefined
+              ? undefined
+              : installedPresentation(
+                  effect.value,
+                  livePresentation(next),
+                  transaction.newSelection,
+                  transaction.newDoc.length,
+                );
       } else if (
         effect.is(clearLivePresentationEffect) &&
         next?.type === "live"
       ) {
         next = undefined;
+      } else if (
+        effect.is(clearQuickApplyActivationEffect) &&
+        next?.type === "live" &&
+        next.activeQuickApplySuggestionId !== undefined
+      ) {
+        next = presentationWithQuickApply(
+          next,
+          undefined,
+          false,
+          transaction.newDoc.length,
+        );
       }
     }
     return next;
@@ -138,11 +178,127 @@ const presentationField = StateField.define<PresentationState | undefined>({
     EditorView.decorations.from(field, (value) => value?.decorations ?? Decoration.none),
 });
 
+function installedPresentation(
+  input: LivePresentationInput,
+  previous: InstalledPresentation | undefined,
+  selection: EditorSelection,
+  documentLength: number,
+): InstalledPresentation {
+  const sameCheckGeneration =
+    previous?.snapshot.documentRevision === input.snapshot.documentRevision &&
+    previous.snapshot.checkGeneration === input.snapshot.checkGeneration;
+  let canAutoActivate = sameCheckGeneration
+    ? previous?.canAutoActivateQuickApply ?? false
+    : input.snapshot.interaction.quickApply.enabled;
+  let activeSuggestionId: string | undefined;
+
+  if (input.snapshot.interaction.quickApply.enabled) {
+    const previousActive = sameCheckGeneration
+      ? previous?.activeQuickApplySuggestionId
+      : undefined;
+    const previousSuggestion = previousActive === undefined
+      ? undefined
+      : input.snapshot.suggestions.find((suggestion) =>
+          suggestion.id === previousActive &&
+          suggestion.sourceId === "document" &&
+          suggestion.availableActions.includes("apply") &&
+          selection.ranges.length === 1 &&
+          selection.main.empty &&
+          rangeContainsCursor(suggestion.activationRange, selection.main.head)
+        );
+    if (previousSuggestion) {
+      activeSuggestionId = previousSuggestion.id;
+      canAutoActivate = false;
+    } else if (canAutoActivate) {
+      const candidate = quickApplyCandidate(input.snapshot, selection);
+      activeSuggestionId = candidate?.id;
+      canAutoActivate = candidate === undefined;
+    }
+  } else {
+    canAutoActivate = false;
+  }
+
+  return {
+    ...input,
+    activeQuickApplySuggestionId: activeSuggestionId,
+    canAutoActivateQuickApply: canAutoActivate,
+    decorations: buildDecorations(
+      documentLength,
+      input.snapshot,
+      activeSuggestionId,
+    ),
+  };
+}
+
+function selectionUpdatedPresentation(
+  presentation: PresentationState | undefined,
+  transaction: Transaction,
+): PresentationState | undefined {
+  if (presentation?.type !== "live") {
+    return presentation;
+  }
+  if (
+    transaction.isUserEvent("select.pointer") ||
+    !presentation.snapshot.interaction.quickApply.enabled
+  ) {
+    return presentationWithQuickApply(
+      presentation,
+      undefined,
+      false,
+      transaction.newDoc.length,
+    );
+  }
+  const candidate = quickApplyCandidate(
+    presentation.snapshot,
+    transaction.newSelection,
+  );
+  return presentationWithQuickApply(
+    presentation,
+    candidate?.id,
+    candidate === undefined &&
+      transaction.newSelection.ranges.length === 1 &&
+      transaction.newSelection.main.empty,
+    transaction.newDoc.length,
+  );
+}
+
+function presentationWithQuickApply(
+  presentation: InstalledPresentation,
+  activeSuggestionId: string | undefined,
+  canAutoActivate: boolean,
+  documentLength: number,
+): InstalledPresentation {
+  if (
+    presentation.activeQuickApplySuggestionId === activeSuggestionId &&
+    presentation.canAutoActivateQuickApply === canAutoActivate
+  ) {
+    return presentation;
+  }
+  return {
+    ...presentation,
+    activeQuickApplySuggestionId: activeSuggestionId,
+    canAutoActivateQuickApply: canAutoActivate,
+    decorations: buildDecorations(
+      documentLength,
+      presentation.snapshot,
+      activeSuggestionId,
+    ),
+  };
+}
+
+function rangeContainsCursor(
+  range: { readonly location: number; readonly length: number },
+  cursor: number,
+): boolean {
+  return cursor >= range.location && cursor <= range.location + range.length;
+}
+
 class InsertionAnchorWidget extends WidgetType {
   constructor(
     private readonly suggestionId: string | undefined,
     private readonly style: PresentationAppearance["highlight"]["style"],
     private readonly color: string,
+    private readonly isQuickApplyActive = false,
   ) {
     super();
   }
@@ -151,7 +307,8 @@ class InsertionAnchorWidget extends WidgetType {
     return (
       other.suggestionId === this.suggestionId &&
       other.style === this.style &&
-      other.color === this.color
+      other.color === this.color &&
+      other.isQuickApplyActive === this.isQuickApplyActive
     );
   }
 
@@ -171,6 +328,9 @@ class InsertionAnchorWidget extends WidgetType {
       anchor.style.pointerEvents = "none";
     } else {
       anchor.dataset.refineSuggestionId = this.suggestionId;
+      if (this.isQuickApplyActive) {
+        anchor.classList.add("refine-insertion-anchor--quick-apply-active");
+      }
       anchor.setAttribute("aria-label", "Refine insertion suggestion");
       anchor.setAttribute("role", "button");
       anchor.tabIndex = 0;
@@ -270,13 +430,17 @@ class PresentationPopover implements PluginValue {
   private hoverCloseTimer: number | undefined;
   private hoverOpenTimer: number | undefined;
   private hoverReference: ReferenceElement | undefined;
-  private manualTrigger: HTMLElement | undefined;
+  private manualTrigger: ManualSuggestionTrigger | undefined;
   private pendingHover: HoverCandidate | undefined;
   private primaryPointerDownInEditor = false;
+  private quickApplyTip: HTMLElement | undefined;
+  private quickApplyTipCleanup: (() => void) | undefined;
+  private quickApplyTipIdentity: string | undefined;
   private selectionStartedOnSuggestion = false;
   private suppressHoverUntilMove = false;
 
   constructor(private readonly view: EditorView) {
+    view.dom.addEventListener("keydown", this.handleQuickApplyKeyDown, true);
     view.contentDOM.addEventListener("mousedown", this.handleMouseDown, true);
     view.contentDOM.addEventListener("mousemove", this.handleMouseMove, true);
     view.contentDOM.addEventListener("dragstart", this.handleDragStart, true);
@@ -322,9 +486,11 @@ class PresentationPopover implements PluginValue {
       // its already-mapped selection untouched.
       this.view.focus();
     }
+    this.syncQuickApplyTip();
   }
 
   destroy(): void {
+    this.view.dom.removeEventListener("keydown", this.handleQuickApplyKeyDown, true);
     this.view.contentDOM.removeEventListener("mousedown", this.handleMouseDown, true);
     this.view.contentDOM.removeEventListener("mousemove", this.handleMouseMove, true);
     this.view.contentDOM.removeEventListener("dragstart", this.handleDragStart, true);
@@ -345,10 +511,20 @@ class PresentationPopover implements PluginValue {
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = false;
     this.close();
+    this.closeQuickApplyTip();
   }
 
   open(target: HTMLElement, suggestionId: string): void {
-    this.openCard(suggestionId, target, "manual", target);
+    const match = this.suggestionMatchForTarget(target, suggestionId);
+    const needsDurableReference = target.classList.contains(
+      "refine-insertion-anchor--quick-apply-active",
+    );
+    this.openCard(
+      suggestionId,
+      needsDurableReference && match ? this.rangeReference(match) : target,
+      "manual",
+      this.manualSuggestionTrigger(target, suggestionId, match),
+    );
   }
 
   dismiss(): void {
@@ -363,7 +539,7 @@ class PresentationPopover implements PluginValue {
     suggestionId: string,
     reference: ReferenceElement,
     mode: SuggestionCardMode,
-    trigger?: HTMLElement,
+    trigger?: ManualSuggestionTrigger,
   ): void {
     const presentation = livePresentation(
       this.view.state.field(presentationField, false),
@@ -376,7 +552,9 @@ class PresentationPopover implements PluginValue {
       return;
     }
 
+    this.clearQuickApplyActivation();
     this.close();
+    this.closeQuickApplyTip();
     this.cardMode = mode;
     this.hoverReference = mode === "hover" ? reference : undefined;
     this.manualTrigger = trigger;
@@ -437,9 +615,47 @@ class PresentationPopover implements PluginValue {
   private closeAndRestoreTrigger(): void {
     const trigger = this.manualTrigger;
     this.close();
-    if (trigger?.isConnected) {
-      trigger.focus();
+    const liveTrigger = trigger && this.resolveManualSuggestionTrigger(trigger);
+    if (liveTrigger) {
+      liveTrigger.focus();
+    } else if (this.view.dom.isConnected) {
+      this.view.focus();
     }
+  }
+
+  private manualSuggestionTrigger(
+    element: HTMLElement,
+    suggestionId: string,
+    match?: SuggestionRangeMatch,
+  ): ManualSuggestionTrigger {
+    return {
+      element,
+      suggestionId,
+      position: match?.from,
+    };
+  }
+
+  private resolveManualSuggestionTrigger(
+    trigger: ManualSuggestionTrigger,
+  ): HTMLElement | undefined {
+    if (trigger.element.isConnected) {
+      return trigger.element;
+    }
+    return [...this.view.contentDOM.querySelectorAll<HTMLElement>(
+      "[data-refine-suggestion-id]",
+    )].find((candidate) => {
+      if (candidate.dataset.refineSuggestionId !== trigger.suggestionId) {
+        return false;
+      }
+      if (trigger.position === undefined) {
+        return true;
+      }
+      try {
+        return this.view.posAtDOM(candidate, 0) === trigger.position;
+      } catch {
+        return false;
+      }
+    });
   }
 
   private async positionCard(
@@ -468,6 +684,156 @@ class PresentationPopover implements PluginValue {
     card.dataset.refinePlacement = placement;
   }
 
+  private readonly handleQuickApplyKeyDown = (event: KeyboardEvent): void => {
+    // Cursor Quick Apply owns only keystrokes directed at CodeMirror's editing
+    // surface. Focused marks, Live Preview links, and editor widgets retain
+    // their own keyboard behavior even when the caret is inside an active scope.
+    if (event.target !== this.view.contentDOM) {
+      return;
+    }
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
+    const suggestionId = presentation?.activeQuickApplySuggestionId;
+    const configuration = presentation?.snapshot.interaction.quickApply;
+    if (!presentation || !suggestionId || !configuration?.enabled) {
+      return;
+    }
+
+    if (suggestionActionKeyMatches(event, configuration.dismissKey)) {
+      this.consumeQuickApplyKey(event);
+      this.clearQuickApplyActivation();
+      return;
+    }
+    if (!suggestionActionKeyMatches(event, configuration.applyKey)) {
+      return;
+    }
+    const suggestion = presentation.snapshot.suggestions.find((candidate) =>
+      candidate.id === suggestionId &&
+      candidate.sourceId === "document" &&
+      candidate.availableActions.includes("apply")
+    );
+    if (!suggestion) {
+      return;
+    }
+
+    this.consumeQuickApplyKey(event);
+    this.clearQuickApplyActivation();
+    void presentation.actions.apply(suggestion.id).catch(() => undefined);
+  };
+
+  private consumeQuickApplyKey(event: KeyboardEvent): void {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  private clearQuickApplyActivation(): void {
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
+    if (presentation?.activeQuickApplySuggestionId === undefined) {
+      return;
+    }
+    this.view.dispatch({ effects: clearQuickApplyActivationEffect.of(null) });
+  }
+
+  private syncQuickApplyTip(): void {
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
+    const suggestionId = presentation?.activeQuickApplySuggestionId;
+    const configuration = presentation?.snapshot.interaction.quickApply;
+    if (
+      this.element ||
+      !presentation ||
+      !suggestionId ||
+      !configuration?.enabled ||
+      configuration.activationStyle !== "showTipAndHighlight"
+    ) {
+      this.closeQuickApplyTip();
+      return;
+    }
+    const suggestion = presentation.snapshot.suggestions.find(
+      (candidate) => candidate.id === suggestionId,
+    );
+    if (!suggestion) {
+      this.closeQuickApplyTip();
+      return;
+    }
+    const cursor = this.view.state.selection.main.head;
+    const identity = [
+      presentation.snapshot.presentationRevision,
+      suggestionId,
+      configuration.applyKey,
+      cursor,
+    ].join(":");
+    if (this.quickApplyTipIdentity === identity && this.quickApplyTip) {
+      return;
+    }
+
+    this.closeQuickApplyTip();
+    const label = suggestionActionKeyLabel(configuration.applyKey);
+    const tip = this.view.dom.ownerDocument.createElement("div");
+    tip.className = "refine-quick-apply-tip";
+    tip.textContent = `Press ${label} to apply`;
+    tip.setAttribute("aria-hidden", "true");
+    tip.style.left = "0px";
+    tip.style.top = "0px";
+    tip.style.visibility = "hidden";
+    this.view.dom.ownerDocument.body.append(tip);
+    this.quickApplyTip = tip;
+    this.quickApplyTipIdentity = identity;
+    const target = quickApplyTipTarget(suggestion, cursor);
+    const reference = this.rangeReference({
+      suggestion,
+      from: target.location,
+      to: target.location + target.length,
+    });
+    this.quickApplyTipCleanup = autoUpdate(reference, tip, () => {
+      void this.positionQuickApplyTip(reference, tip);
+    });
+  }
+
+  private closeQuickApplyTip(): void {
+    this.quickApplyTipCleanup?.();
+    this.quickApplyTipCleanup = undefined;
+    this.quickApplyTip?.remove();
+    this.quickApplyTip = undefined;
+    this.quickApplyTipIdentity = undefined;
+  }
+
+  private async positionQuickApplyTip(
+    reference: ReferenceElement,
+    tip: HTMLElement,
+  ): Promise<void> {
+    // `autoUpdate` may already have queued one last measurement when the
+    // presentation or editor is torn down. Avoid asking CodeMirror for DOM
+    // geometry after that reference stops belonging to this popover.
+    if (this.quickApplyTip !== tip) {
+      return;
+    }
+    const { x, y, placement } = await computePosition(reference, tip, {
+      strategy: "fixed",
+      placement: "bottom-end",
+      middleware: [
+        offset(suggestionCardGapPx),
+        flip({
+          padding: suggestionCardViewportGutterPx,
+          fallbackPlacements: ["top-end"],
+        }),
+        shift({ padding: suggestionCardViewportGutterPx }),
+      ],
+    });
+    if (this.quickApplyTip !== tip) {
+      return;
+    }
+    const ownerWindow = this.view.dom.ownerDocument.defaultView;
+    tip.style.left = `${roundByDevicePixelRatio(x, ownerWindow)}px`;
+    tip.style.top = `${roundByDevicePixelRatio(y, ownerWindow)}px`;
+    tip.style.visibility = "";
+    tip.dataset.refinePlacement = placement;
+  }
+
   private readonly handleMouseDown = (event: MouseEvent): void => {
     this.primaryPointerDownInEditor = event.button === 0;
     this.selectionStartedOnSuggestion = false;
@@ -475,6 +841,7 @@ class PresentationPopover implements PluginValue {
       // Keep hover gated until a later button-free pointer move so a quick
       // click cannot become a delayed card after mouseup.
       this.suppressHoverUntilMove = true;
+      this.clearQuickApplyActivation();
     }
     this.close();
     if (
@@ -519,6 +886,7 @@ class PresentationPopover implements PluginValue {
       }
       return;
     }
+    this.clearQuickApplyActivation();
     if (
       this.cardMode === "hover" &&
       this.element &&
@@ -555,6 +923,7 @@ class PresentationPopover implements PluginValue {
     this.primaryPointerDownInEditor = false;
     this.selectionStartedOnSuggestion = false;
     this.suppressHoverUntilMove = true;
+    this.clearQuickApplyActivation();
     this.close();
   };
 
@@ -575,7 +944,13 @@ class PresentationPopover implements PluginValue {
       hit.suggestionId,
       reference,
       "manual",
-      hit.trigger,
+      hit.trigger
+        ? this.manualSuggestionTrigger(
+            hit.trigger,
+            hit.suggestionId,
+            hit.match,
+          )
+        : undefined,
     );
   };
 
@@ -583,7 +958,15 @@ class PresentationPopover implements PluginValue {
     const directTarget = suggestionTarget(event.target);
     const directSuggestionId = directTarget?.dataset.refineSuggestionId;
     if (directTarget && directSuggestionId) {
-      return {
+      const match = this.suggestionMatchForTarget(
+        directTarget,
+        directSuggestionId,
+      );
+      return match ? {
+        suggestionId: directSuggestionId,
+        match,
+        trigger: directTarget,
+      } : {
         suggestionId: directSuggestionId,
         trigger: directTarget,
       };
@@ -592,6 +975,41 @@ class PresentationPopover implements PluginValue {
     const match = this.hoverMatch(event);
     return match
       ? { suggestionId: match.suggestion.id, match }
+      : undefined;
+  }
+
+  private suggestionMatchForTarget(
+    target: HTMLElement,
+    suggestionId: string,
+  ): SuggestionRangeMatch | undefined {
+    const presentation = livePresentation(
+      this.view.state.field(presentationField, false),
+    );
+    const suggestion = presentation?.snapshot.suggestions.find(
+      (candidate) => candidate.id === suggestionId,
+    );
+    if (!suggestion || suggestion.sourceId !== "document") {
+      return undefined;
+    }
+    let position: number;
+    try {
+      position = this.view.posAtDOM(target, 0);
+    } catch {
+      return undefined;
+    }
+    const range = suggestion.highlightRanges.find(
+      (candidate) => candidate.location === position,
+    ) ?? suggestion.highlightRanges.find(
+      (candidate) =>
+        position >= candidate.location &&
+        position <= candidate.location + candidate.length,
+    );
+    return range
+      ? {
+          suggestion,
+          from: range.location,
+          to: range.location + range.length,
+        }
       : undefined;
   }
 
@@ -849,7 +1267,6 @@ export function installPresentation(
       snapshot,
       actions,
       renderExplanation,
-      decorations: buildDecorations(view, snapshot),
     }),
   });
 }
@@ -877,6 +1294,35 @@ function pointerSide(
   return before
     ? leftToRight ? -1 : 1
     : leftToRight ? 1 : -1;
+}
+
+function quickApplyTipTarget(
+  suggestion: PresentedSuggestion,
+  cursor: number,
+): { readonly location: number; readonly length: number } {
+  return [...suggestion.highlightRanges].sort((left, right) => {
+    const distance = distanceFromRange(cursor, left) -
+      distanceFromRange(cursor, right);
+    if (distance !== 0) {
+      return distance;
+    }
+    if (left.length !== right.length) {
+      return left.length - right.length;
+    }
+    return left.location - right.location;
+  })[0] ?? { location: cursor, length: 0 };
+}
+
+function distanceFromRange(
+  cursor: number,
+  range: { readonly location: number; readonly length: number },
+): number {
+  const end = range.location + range.length;
+  return cursor < range.location
+    ? range.location - cursor
+    : cursor > end
+      ? cursor - end
+      : 0;
 }
 
 function pointerReference(point: Pick<MouseEvent, "clientX" | "clientY">): VirtualElement {
@@ -1046,8 +1492,9 @@ function suggestionKindRank(kind: PresentedSuggestion["kind"]): number {
 }
 
 function buildDecorations(
-  view: EditorView,
+  documentLength: number,
   snapshot: PresentationSnapshot,
+  activeQuickApplySuggestionId?: string,
 ): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   for (const suggestion of snapshot.suggestions) {
@@ -1059,14 +1506,21 @@ function buildDecorations(
       const color = suggestionColor(snapshot.appearance, suggestion.kind);
       const from = range.location;
       const to = from + range.length;
-      if (from < 0 || to < from || to > view.state.doc.length) {
+      if (from < 0 || to < from || to > documentLength) {
         continue;
       }
+      const isQuickApplyActive =
+        suggestion.id === activeQuickApplySuggestionId;
       if (range.length === 0) {
         ranges.push(
           Decoration.widget({
             side: 1,
-            widget: new InsertionAnchorWidget(suggestion.id, style, color),
+            widget: new InsertionAnchorWidget(
+              suggestion.id,
+              style,
+              color,
+              isQuickApplyActive,
+            ),
           }).range(from),
         );
       } else {
@@ -1082,7 +1536,13 @@ function buildDecorations(
               ].join("; "),
               tabindex: "0",
             },
-            class: `refine-suggestion refine-suggestion--${style}`,
+            class: [
+              "refine-suggestion",
+              `refine-suggestion--${style}`,
+              isQuickApplyActive
+                ? "refine-suggestion--quick-apply-active"
+                : "",
+            ].filter(Boolean).join(" "),
             inclusive: false,
           }).range(from, to),
         );

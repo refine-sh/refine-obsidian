@@ -13,7 +13,10 @@ import type {
   PresentationSnapshot,
   SuggestionActions,
 } from "../../src/integration/types";
-import { DEFAULT_PRESENTATION_APPEARANCE } from "../../src/integration/types";
+import {
+  DEFAULT_PRESENTATION_APPEARANCE,
+  DEFAULT_PRESENTATION_INTERACTION,
+} from "../../src/integration/types";
 import { ObsidianWritingHost } from "../../src/obsidian/host";
 import { AsyncQueue } from "../../src/shared/async-queue";
 import type {
@@ -59,8 +62,10 @@ describe("Obsidian presentation", () => {
     await host.present(
       {
         documentRevision: "present:0",
+        checkGeneration: 0,
         presentationRevision: 2,
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         state: { type: "complete", coverage: "full" },
         suggestions: [],
       },
@@ -936,12 +941,14 @@ describe("Obsidian presentation", () => {
         status: "complete",
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: DEFAULT_PRESENTATION_INTERACTION,
         suggestions: [
           {
             id: "runtime-explain",
             sourceId: "document",
             kind: "grammar",
             attribution: testAttribution,
+            activationRange: { location: 8, length: 2 },
             highlightRanges: [{ location: 8, length: 2 }],
             diff: [],
             availableActions: ["explain"],
@@ -986,6 +993,145 @@ describe("Obsidian presentation", () => {
     view.contentDOM.dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
     );
+    controller.abort();
+    await run;
+  });
+
+  it("routes a synchronized Quick Apply shortcut through the real runtime handshake", async () => {
+    const { host, view } = createHost(
+      "[create an link](URL)or",
+      "runtime-quick-apply",
+    );
+    view.dispatch({ selection: { anchor: 3 }, userEvent: "select" });
+    const selectionBefore = view.state.selection;
+    const events = new AsyncQueue<ServerEventEnvelope>();
+    const commands: { command: ClientCommand; id: string }[] = [];
+    let commandSequence = 0;
+    let eventSequence = 0;
+    const enginePort = {
+      connect: async (): Promise<RefineTransportSession> => ({
+        serverEpoch: "epoch-quick-apply",
+        runResumed: false,
+        send: async (command): Promise<CommandReceipt> => {
+          commandSequence += 1;
+          const id = `quick-command-${commandSequence}`;
+          commands.push({ command, id });
+          return { sequence: commandSequence, id };
+        },
+        events: () => events,
+        close: async () => events.close(),
+      }),
+    };
+    const emit = (event: ServerEventEnvelope["event"]): void => {
+      eventSequence += 1;
+      events.push({
+        type: "event",
+        sequence: eventSequence,
+        epoch: "epoch-quick-apply",
+        event,
+      });
+    };
+    const controller = new AbortController();
+    const run = createRefineIntegration({ enginePort }).run({
+      host,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() =>
+      expect(commands[0]?.command.type).toBe("openDocument"),
+    );
+    const open = commands[0]?.command;
+    if (!open || open.type !== "openDocument") {
+      throw new Error("expected open document command");
+    }
+    emit({
+      type: "presentationContentReplaced",
+      checkId: "check-runtime-quick-apply",
+      content: {
+        documentRevision: open.snapshot.revision,
+        status: "complete",
+        coverage: "full",
+        appearance: DEFAULT_PRESENTATION_APPEARANCE,
+        interaction: {
+          quickApply: {
+            enabled: true,
+            applyKey: "rightShift",
+            dismissKey: "escape",
+            activationStyle: "showTipAndHighlight",
+          },
+        },
+        suggestions: [
+          {
+            id: "runtime-quick-apply",
+            sourceId: "document",
+            kind: "grammar",
+            attribution: testAttribution,
+            activationRange: { location: 0, length: 22 },
+            highlightRanges: [{ location: 8, length: 2 }],
+            diff: [
+              { kind: "delete", text: "an" },
+              { kind: "insert", text: "a" },
+            ],
+            availableActions: ["apply"],
+          },
+        ],
+      },
+    });
+    await vi.waitFor(() =>
+      expect(document.querySelector(".refine-suggestion--quick-apply-active"))
+        .not.toBeNull(),
+    );
+
+    const shortcut = new KeyboardEvent("keydown", {
+      key: "Shift",
+      code: "ShiftRight",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    view.contentDOM.dispatchEvent(shortcut);
+    expect(shortcut.defaultPrevented).toBe(true);
+    await vi.waitFor(() =>
+      expect(
+        commands.filter(({ command }) => command.type === "performAction"),
+      ).toHaveLength(1),
+    );
+    const perform = commands.find(
+      ({ command }) => command.type === "performAction",
+    )?.command;
+    if (!perform || perform.type !== "performAction") {
+      throw new Error("expected perform action command");
+    }
+    expect(perform).toMatchObject({
+      kind: "apply",
+      suggestion: {
+        id: "runtime-quick-apply",
+        documentRevision: open.snapshot.revision,
+      },
+    });
+
+    emit({
+      type: "applyRequested",
+      actionId: perform.actionId,
+      transactionId: "runtime-quick-apply-transaction",
+      request: {
+        expectedRevision: open.snapshot.revision,
+        sourceId: "document",
+        edits: [{
+          range: { location: 8, length: 2 },
+          expectedText: "an",
+          replacement: "a",
+        }],
+      },
+    });
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe("[create a link](URL)or");
+      expect(
+        commands.filter(({ command }) => command.type === "completeApply"),
+      ).toHaveLength(1);
+    });
+    expect(view.state.selection.eq(selectionBefore)).toBe(true);
+    emit({ type: "actionCompleted", actionId: perform.actionId });
+
     controller.abort();
     await run;
   });
@@ -2343,8 +2489,10 @@ class LivePreviewSyntaxWidget extends WidgetType {
 function presentation(revision: string): PresentationSnapshot {
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -2352,6 +2500,7 @@ function presentation(revision: string): PresentationSnapshot {
         sourceId: "document",
         kind: "grammar",
         attribution: testAttribution,
+        activationRange: { location: 8, length: 13 },
         highlightRanges: [
           { location: 8, length: 2 },
           { location: 21, length: 0 },
@@ -2375,8 +2524,10 @@ function separatedSuggestionPresentation(
 ): PresentationSnapshot {
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -2384,6 +2535,7 @@ function separatedSuggestionPresentation(
         sourceId: "document",
         kind: "grammar",
         attribution: testAttribution,
+        activationRange: { location: locationOffset, length: 3 },
         highlightRanges: [{ location: locationOffset, length: 3 }],
         diff: [{ kind: "delete", text: "bad" }],
         availableActions: ["apply"],
@@ -2393,6 +2545,7 @@ function separatedSuggestionPresentation(
         sourceId: "document",
         kind: "grammar",
         attribution: testAttribution,
+        activationRange: { location: locationOffset + 11, length: 10 },
         highlightRanges: [
           { location: locationOffset + 11, length: 3 },
           { location: locationOffset + 21, length: 0 },
@@ -2411,8 +2564,10 @@ function lifecyclePresentation(
 ): PresentationSnapshot {
   return {
     documentRevision,
+    checkGeneration: 0,
     presentationRevision,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state,
     suggestions: [],
   };
@@ -2425,6 +2580,7 @@ function spaceOnlyPresentation(
 ): PresentationSnapshot {
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: {
       ...DEFAULT_PRESENTATION_APPEARANCE,
@@ -2433,6 +2589,7 @@ function spaceOnlyPresentation(
         showHiddenWhitespace,
       },
     },
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -2440,6 +2597,7 @@ function spaceOnlyPresentation(
         sourceId: "document",
         kind: "grammar",
         attribution: testAttribution,
+        activationRange: { location: 21, length: 1 },
         highlightRanges: [
           { location: 21, length: 1 },
         ],
@@ -2460,8 +2618,10 @@ function emptyPresentation(
 ): PresentationSnapshot {
   return {
     documentRevision,
+    checkGeneration: 0,
     presentationRevision,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [],
   };
@@ -2473,6 +2633,7 @@ function appearancePresentation(
 ): PresentationSnapshot {
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: {
       highlight: {
@@ -2482,6 +2643,7 @@ function appearancePresentation(
       },
       diff: DEFAULT_PRESENTATION_APPEARANCE.diff,
     },
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -2489,6 +2651,7 @@ function appearancePresentation(
         sourceId: "document",
         kind: "grammar",
         attribution: testAttribution,
+        activationRange: { location: 0, length: 2 },
         highlightRanges: [{ location: 0, length: 2 }],
         diff: [],
         availableActions: [],
@@ -2498,6 +2661,7 @@ function appearancePresentation(
         sourceId: "document",
         kind: "fluency",
         attribution: testAttribution,
+        activationRange: { location: 3, length: 2 },
         highlightRanges: [{ location: 3, length: 2 }],
         diff: [],
         availableActions: [],
@@ -2507,6 +2671,7 @@ function appearancePresentation(
         sourceId: "document",
         kind: "mixed",
         attribution: testAttribution,
+        activationRange: { location: 6, length: 0 },
         highlightRanges: [{ location: 6, length: 0 }],
         diff: [],
         availableActions: [],
@@ -2526,14 +2691,17 @@ function overlapPresentation(revision: string): PresentationSnapshot {
     sourceId: "document" as const,
     kind,
     attribution: testAttribution,
+    activationRange: { location, length },
     highlightRanges: [{ location, length }],
     diff: [{ kind: "unchanged" as const, text: id }],
     availableActions: [] as const,
   });
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       candidate("grammar-wide", "grammar", 0, 6),
@@ -2547,8 +2715,10 @@ function overlapPresentation(revision: string): PresentationSnapshot {
 function splitScopeOverlapPresentation(revision: string): PresentationSnapshot {
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -2556,6 +2726,7 @@ function splitScopeOverlapPresentation(revision: string): PresentationSnapshot {
         sourceId: "document",
         kind: "grammar",
         attribution: testAttribution,
+        activationRange: { location: 0, length: 6 },
         highlightRanges: [
           { location: 0, length: 1 },
           { location: 2, length: 2 },
@@ -2569,6 +2740,7 @@ function splitScopeOverlapPresentation(revision: string): PresentationSnapshot {
         sourceId: "document",
         kind: "fluency",
         attribution: testAttribution,
+        activationRange: { location: 2, length: 3 },
         highlightRanges: [{ location: 2, length: 3 }],
         diff: [{ kind: "unchanged", text: "word" }],
         availableActions: [],
@@ -2580,8 +2752,10 @@ function splitScopeOverlapPresentation(revision: string): PresentationSnapshot {
 function sentenceScopedPresentation(revision: string): PresentationSnapshot {
   return {
     documentRevision: revision,
+    checkGeneration: 0,
     presentationRevision: 1,
     appearance: DEFAULT_PRESENTATION_APPEARANCE,
+    interaction: DEFAULT_PRESENTATION_INTERACTION,
     state: { type: "complete", coverage: "full" },
     suggestions: [
       {
@@ -2589,6 +2763,7 @@ function sentenceScopedPresentation(revision: string): PresentationSnapshot {
         sourceId: "document",
         kind: "fluency",
         attribution: testAttribution,
+        activationRange: { location: 2, length: 27 },
         highlightRanges: [
           { location: 2, length: 6 },
           { location: 24, length: 5 },
