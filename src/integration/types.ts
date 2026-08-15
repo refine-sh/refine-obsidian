@@ -90,6 +90,7 @@ export type QuickApplyActivationStyle =
   | "showTipAndHighlight";
 
 export interface PresentationInteraction {
+  readonly automaticChecksEnabled: boolean;
   readonly quickApply: {
     readonly enabled: boolean;
     readonly applyKey: SuggestionActionKey;
@@ -99,6 +100,7 @@ export interface PresentationInteraction {
 }
 
 export const DEFAULT_PRESENTATION_INTERACTION: PresentationInteraction = {
+  automaticChecksEnabled: true,
   quickApply: {
     enabled: true,
     applyKey: "tab",

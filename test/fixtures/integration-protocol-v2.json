@@ -1,7 +1,7 @@
 {
   "hello": {
     "type": "hello",
-    "protocol": { "major": 2, "minor": 2 },
+    "protocol": { "major": 2, "minor": 3 },
     "client": {
       "id": "refine-obsidian",
       "version": "0.1.0",
@@ -14,11 +14,11 @@
   "rejection": {
     "type": "rejected",
     "reason": "incompatibleProtocol",
-    "protocol": { "major": 2, "minor": 2 }
+    "protocol": { "major": 2, "minor": 3 }
   },
   "welcome": {
     "type": "welcome",
-    "protocol": { "major": 2, "minor": 2 },
+    "protocol": { "major": 2, "minor": 3 },
     "serverEpoch": "epoch-fixture",
     "runResumed": false,
     "limits": {
@@ -73,6 +73,7 @@
           }
         },
         "interaction": {
+          "automaticChecksEnabled": true,
           "quickApply": {
             "enabled": true,
             "applyKey": "tab",
@@ -109,6 +110,7 @@
           }
         },
         "interaction": {
+          "automaticChecksEnabled": false,
           "quickApply": {
             "enabled": true,
             "applyKey": "tab",

@@ -598,6 +598,8 @@ function interaction(
   overrides: Partial<PresentationInteraction["quickApply"]> = {},
 ): PresentationInteraction {
   return {
+    automaticChecksEnabled:
+      DEFAULT_PRESENTATION_INTERACTION.automaticChecksEnabled,
     quickApply: {
       ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
       ...overrides,

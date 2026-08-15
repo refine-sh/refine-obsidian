@@ -3198,6 +3198,7 @@ const alternateAppearance: PresentationAppearance = {
 };
 
 const alternateInteraction: PresentationInteraction = {
+  automaticChecksEnabled: false,
   quickApply: {
     enabled: false,
     applyKey: "rightShift",

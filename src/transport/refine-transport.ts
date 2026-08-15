@@ -291,7 +291,7 @@ function decodeWelcome(value: unknown): WelcomeFrame {
   }
   return {
     type: "welcome",
-    protocol: { major: 2, minor: 2 },
+    protocol: { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR },
     serverEpoch: object.serverEpoch,
     runResumed: object.runResumed,
     limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -538,13 +538,14 @@ function decodePresentationInteraction(value: unknown): PresentationInteraction 
     "presentation.interaction.quickApply",
   );
   if (
-    !hasExactKeys(interaction, ["quickApply"]) ||
+    !hasExactKeys(interaction, ["automaticChecksEnabled", "quickApply"]) ||
     !hasExactKeys(quickApply, [
       "enabled",
       "applyKey",
       "dismissKey",
       "activationStyle",
     ]) ||
+    typeof interaction.automaticChecksEnabled !== "boolean" ||
     typeof quickApply.enabled !== "boolean" ||
     !isSuggestionActionKey(quickApply.applyKey) ||
     !isSuggestionActionKey(quickApply.dismissKey) ||
@@ -554,6 +555,7 @@ function decodePresentationInteraction(value: unknown): PresentationInteraction 
     throw new TransportProtocolError("Malformed presentation interaction");
   }
   return {
+    automaticChecksEnabled: interaction.automaticChecksEnabled,
     quickApply: {
       enabled: quickApply.enabled,
       applyKey: quickApply.applyKey,

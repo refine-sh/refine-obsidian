@@ -36,7 +36,7 @@ describe("integration protocol V2 golden transcript", () => {
     expect(fixture.rejection).toEqual({
       type: "rejected",
       reason: "incompatibleProtocol",
-      protocol: { major: 2, minor: 2 },
+      protocol: { major: 2, minor: 3 },
     });
     expect(fixture.checkingPresentation).toMatchObject({
       event: {
@@ -45,6 +45,7 @@ describe("integration protocol V2 golden transcript", () => {
           status: "checking",
           progress: { completedUnitCount: 1, totalUnitCount: 3 },
           interaction: {
+            automaticChecksEnabled: true,
             quickApply: {
               enabled: true,
               applyKey: "tab",
@@ -59,6 +60,7 @@ describe("integration protocol V2 golden transcript", () => {
       event: {
         type: "presentationContentReplaced",
         content: {
+          interaction: { automaticChecksEnabled: false },
           suggestions: [
             {
               id: "suggestion-article",
@@ -113,7 +115,7 @@ describe("integration protocol V2 golden transcript", () => {
         launchToken: fixture.hello.launchToken,
         serverEpoch: fixture.welcome.serverEpoch,
         protocolMajor: 2,
-        protocolMinor: 2,
+        protocolMinor: 3,
         pid: 123,
       }),
     };

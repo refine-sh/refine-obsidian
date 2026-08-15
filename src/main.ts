@@ -23,6 +23,7 @@ import {
   type RefineStatusBarState,
   statusBarStateForSession,
   statusMenuShowsCheckControls,
+  statusMenuShowsManualCheck,
 } from "./obsidian/status-bar";
 import {
   IncompatibleProtocolError,
@@ -164,13 +165,15 @@ export default class RefinePlugin extends Plugin {
     menu.addItem((item) => item.setTitle(status).setIsLabel(true));
     if (statusMenuShowsCheckControls(this.statusState)) {
       menu.addSeparator();
-      menu.addItem((item) =>
-        item
-          .setTitle("Check current note")
-          .setIcon("spell-check-2")
-          .setDisabled(this.activeEditor() === undefined)
-          .onClick(() => this.requestCheckForActiveEditor()),
-      );
+      if (statusMenuShowsManualCheck(this.statusState)) {
+        menu.addItem((item) =>
+          item
+            .setTitle("Check current note")
+            .setIcon("spell-check-2")
+            .setDisabled(this.activeEditor() === undefined)
+            .onClick(() => this.requestCheckForActiveEditor()),
+        );
+      }
       menu.addItem((item) =>
         item
           .setTitle("Automatic checks follow Refine settings")

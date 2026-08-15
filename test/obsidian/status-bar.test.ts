@@ -12,12 +12,29 @@ import {
   createRefineStatusBarController,
   statusBarStateForSession,
   statusMenuShowsCheckControls,
+  statusMenuShowsManualCheck,
 } from "../../src/obsidian/status-bar";
 
 describe("Refine status bar", () => {
   it("hides check controls from the menu while Refine is disconnected", () => {
     expect(statusMenuShowsCheckControls({ type: "disconnected" })).toBe(false);
     expect(statusMenuShowsCheckControls({ type: "idle" })).toBe(true);
+  });
+
+  it("shows a manual check only when automatic checks are unavailable", () => {
+    expect(statusMenuShowsManualCheck({
+      type: "idle",
+      automaticChecksEnabled: true,
+    })).toBe(false);
+    expect(statusMenuShowsManualCheck({
+      type: "idle",
+      automaticChecksEnabled: false,
+    })).toBe(true);
+    expect(statusMenuShowsManualCheck({ type: "idle" })).toBe(false);
+    expect(statusMenuShowsManualCheck({
+      type: "disconnected",
+      automaticChecksEnabled: false,
+    })).toBe(false);
   });
 
   it("starts in an accessible no-editor state", () => {
@@ -325,12 +342,16 @@ describe("Refine status bar", () => {
       { type: "incompatible", requiredUpdate: "client" } as const,
     ],
     [
-      presented({ type: "pending" }),
-      { type: "idle" } as const,
+      presented({ type: "pending" }, 0, false),
+      { type: "idle", automaticChecksEnabled: false } as const,
     ],
     [
       presented({ type: "checking" }),
-      { type: "checking", count: 0 } as const,
+      {
+        type: "checking",
+        count: 0,
+        automaticChecksEnabled: true,
+      } as const,
     ],
     [
       presented(
@@ -344,31 +365,40 @@ describe("Refine status bar", () => {
         type: "checking",
         count: 3,
         progress: { completedUnitCount: 2, totalUnitCount: 5 },
+        automaticChecksEnabled: true,
       } as const,
     ],
     [
       presented({ type: "complete", coverage: "full" }, 2),
-      { type: "suggestions", count: 2 } as const,
+      {
+        type: "suggestions",
+        count: 2,
+        automaticChecksEnabled: true,
+      } as const,
     ],
     [
       presented({ type: "complete", coverage: "partial" }, 0),
-      { type: "partial", count: 0 } as const,
+      {
+        type: "partial",
+        count: 0,
+        automaticChecksEnabled: true,
+      } as const,
     ],
     [
       presented({ type: "unavailable", reason: "disconnected" }),
-      { type: "disconnected" } as const,
+      { type: "disconnected", automaticChecksEnabled: true } as const,
     ],
     [
       presented({ type: "unavailable", reason: "engineUnavailable" }),
-      { type: "error" } as const,
+      { type: "error", automaticChecksEnabled: true } as const,
     ],
     [
       presented({ type: "unavailable", reason: "checkFailed" }),
-      { type: "checkFailed" } as const,
+      { type: "checkFailed", automaticChecksEnabled: true } as const,
     ],
     [
       presented({ type: "closed" }),
-      { type: "noEditor" } as const,
+      { type: "noEditor", automaticChecksEnabled: true } as const,
     ],
   ])("derives status state from the active session presentation", (session, expected) => {
     expect(statusBarStateForSession(session)).toEqual(expected);
@@ -378,6 +408,7 @@ describe("Refine status bar", () => {
 function presented(
   state: PresentationSnapshot["state"],
   suggestionCount = 0,
+  automaticChecksEnabled = true,
 ): ObsidianSessionState {
   return {
     type: "presented",
@@ -386,7 +417,10 @@ function presented(
       presentationRevision: 1,
       checkGeneration: 0,
       appearance: DEFAULT_PRESENTATION_APPEARANCE,
-      interaction: DEFAULT_PRESENTATION_INTERACTION,
+      interaction: {
+        ...DEFAULT_PRESENTATION_INTERACTION,
+        automaticChecksEnabled,
+      },
       state,
       suggestions: Array.from({ length: suggestionCount }, (_, index) => ({
         id: `suggestion-${index}`,

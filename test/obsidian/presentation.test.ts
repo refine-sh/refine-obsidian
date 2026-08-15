@@ -1185,6 +1185,7 @@ describe("Obsidian presentation", () => {
         coverage: "full",
         appearance: DEFAULT_PRESENTATION_APPEARANCE,
         interaction: {
+          automaticChecksEnabled: true,
           quickApply: {
             enabled: true,
             applyKey: "rightShift",

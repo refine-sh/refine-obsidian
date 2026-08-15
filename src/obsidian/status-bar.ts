@@ -3,7 +3,7 @@ import type { RequiredCompatibilityUpdate } from "../transport/refine-transport"
 import { incompatibleProtocolStatus } from "./compatibility";
 import type { ObsidianSessionState } from "./session-manager";
 
-export type RefineStatusBarState =
+export type RefineStatusBarState = (
   | { readonly type: "noEditor" }
   | { readonly type: "idle" }
   | { readonly type: "connecting" }
@@ -20,7 +20,8 @@ export type RefineStatusBarState =
       readonly type: "incompatible";
       readonly requiredUpdate: RequiredCompatibilityUpdate;
     }
-  | { readonly type: "error" };
+  | { readonly type: "error" }
+) & { readonly automaticChecksEnabled?: boolean };
 
 export type RefineStatusBarActivationEvent = MouseEvent | KeyboardEvent;
 
@@ -39,6 +40,13 @@ export function statusMenuShowsCheckControls(
   state: RefineStatusBarState,
 ): boolean {
   return state.type !== "disconnected";
+}
+
+export function statusMenuShowsManualCheck(
+  state: RefineStatusBarState,
+): boolean {
+  return statusMenuShowsCheckControls(state) &&
+    state.automaticChecksEnabled === false;
 }
 
 const NO_EDITOR_LABEL = "Refine: No editable Markdown note. Open Refine menu";
@@ -177,31 +185,45 @@ export function statusBarStateForSession(
   }
 
   const { snapshot } = session;
+  const automaticChecksEnabled = snapshot.interaction.automaticChecksEnabled;
   switch (snapshot.state.type) {
     case "pending":
-      return { type: "idle" };
+      return { type: "idle", automaticChecksEnabled };
     case "checking":
       return snapshot.state.progress === undefined
-        ? { type: "checking", count: snapshot.suggestions.length }
+        ? {
+            type: "checking",
+            count: snapshot.suggestions.length,
+            automaticChecksEnabled,
+          }
         : {
             type: "checking",
             count: snapshot.suggestions.length,
             progress: snapshot.state.progress,
+            automaticChecksEnabled,
           };
     case "complete":
       return snapshot.state.coverage === "partial"
-        ? { type: "partial", count: snapshot.suggestions.length }
-        : { type: "suggestions", count: snapshot.suggestions.length };
+        ? {
+            type: "partial",
+            count: snapshot.suggestions.length,
+            automaticChecksEnabled,
+          }
+        : {
+            type: "suggestions",
+            count: snapshot.suggestions.length,
+            automaticChecksEnabled,
+          };
     case "unavailable":
       if (snapshot.state.reason === "disconnected") {
-        return { type: "disconnected" };
+        return { type: "disconnected", automaticChecksEnabled };
       }
       if (snapshot.state.reason === "checkFailed") {
-        return { type: "checkFailed" };
+        return { type: "checkFailed", automaticChecksEnabled };
       }
-      return { type: "error" };
+      return { type: "error", automaticChecksEnabled };
     case "closed":
-      return { type: "noEditor" };
+      return { type: "noEditor", automaticChecksEnabled };
   }
 }
 

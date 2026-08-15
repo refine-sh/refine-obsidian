@@ -22,7 +22,7 @@ describe("Refine endpoint discovery", () => {
       launchToken: "per-launch-secret",
       serverEpoch: "epoch-123",
       protocolMajor: 2,
-      protocolMinor: 2,
+      protocolMinor: 3,
       pid: 1234,
     });
   });
@@ -121,7 +121,7 @@ function endpointFileSystem(
       launchToken: "per-launch-secret",
       serverEpoch: "epoch-123",
       protocolMajor: 2,
-      protocolMinor: 2,
+      protocolMinor: 3,
       pid: 1234,
     });
   return {

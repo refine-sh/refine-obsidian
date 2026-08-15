@@ -36,10 +36,12 @@ code:
 External editor integrations should reuse the protocol and integration state
 machine. They only replace the host adapter and native presentation.
 
-## V2.2 behavior
+## V2.3 behavior
 
 - Automatic writing-check scheduling and policy live in the Refine app.
-- **Refine: Check current note** requests an immediate check.
+- **Refine: Check current note** requests an immediate check from the Command
+  Palette. The status menu shows the same action only while automatic checks
+  are disabled or temporarily paused.
 - Refine automatically checks a changed note after a short quiet period when
   **Check Writing Automatically** is enabled in the Refine app.
 - The bottom status-bar icon shows connection, checking, and suggestion state;

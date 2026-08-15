@@ -24,7 +24,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, sent, () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 2 },
+        protocol: { major: 2, minor: 3 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -43,7 +43,7 @@ describe("Refine transport handshake", () => {
     });
     expect(sent[0]).toEqual({
       type: "hello",
-      protocol: { major: 2, minor: 2 },
+      protocol: { major: 2, minor: 3 },
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
       runId: "run-1",
       launchToken: "secret-1",
@@ -257,7 +257,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 2 },
+        protocol: { major: 2, minor: 3 },
         serverEpoch: "epoch-2",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -277,7 +277,7 @@ describe("Refine transport handshake", () => {
 
   it.each([
     [{ major: 2, minor: 0 }, "server"],
-    [{ major: 2, minor: 3 }, "client"],
+    [{ major: 2, minor: 4 }, "client"],
   ] as const)(
     "reports which component must be updated for welcome protocol %s",
     async (protocol, requiredUpdate) => {
@@ -336,7 +336,7 @@ describe("Refine transport handshake", () => {
 
   it.each([
     [{ major: 2, minor: 0 }, "server"],
-    [{ major: 2, minor: 3 }, "client"],
+    [{ major: 2, minor: 4 }, "client"],
   ] as const)(
     "reports which component must be updated for a rejected protocol %s",
     async (protocol, requiredUpdate) => {
@@ -418,7 +418,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 2 },
+        protocol: { major: 2, minor: 3 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -482,7 +482,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 2 },
+        protocol: { major: 2, minor: 3 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -529,9 +529,10 @@ describe("Refine transport handshake", () => {
     await session.close();
   });
 
-  it("decodes synchronized Quick Apply interaction settings", async () => {
+  it("decodes synchronized automatic-check and Quick Apply interaction settings", async () => {
     const fixture = await connectedEventFixture();
     const interaction = {
+      automaticChecksEnabled: false,
       quickApply: {
         enabled: false,
         applyKey: "rightShift",
@@ -558,6 +559,7 @@ describe("Refine transport handshake", () => {
   it("leaves conflicting Quick Apply keys to the Refine settings UI", async () => {
     const fixture = await connectedEventFixture();
     const interaction = {
+      automaticChecksEnabled: true,
       quickApply: {
         ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
         dismissKey: "tab",
@@ -577,7 +579,15 @@ describe("Refine transport handshake", () => {
   });
 
   it.each([
-    ["a missing quickApply object", {}],
+    [
+      "a missing automaticChecksEnabled value",
+      { quickApply: DEFAULT_PRESENTATION_INTERACTION.quickApply },
+    ],
+    ["a missing quickApply object", { automaticChecksEnabled: true }],
+    [
+      "a non-boolean automaticChecksEnabled value",
+      { ...DEFAULT_PRESENTATION_INTERACTION, automaticChecksEnabled: "true" },
+    ],
     [
       "an unknown interaction field",
       { ...DEFAULT_PRESENTATION_INTERACTION, unexpected: true },
@@ -585,6 +595,7 @@ describe("Refine transport handshake", () => {
     [
       "an unknown quickApply field",
       {
+        automaticChecksEnabled: true,
         quickApply: {
           ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
           unexpected: true,
@@ -594,6 +605,7 @@ describe("Refine transport handshake", () => {
     [
       "an unknown apply key",
       {
+        automaticChecksEnabled: true,
         quickApply: {
           ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
           applyKey: "command",
@@ -603,6 +615,7 @@ describe("Refine transport handshake", () => {
     [
       "an unknown dismiss key",
       {
+        automaticChecksEnabled: true,
         quickApply: {
           ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
           dismissKey: "command",
@@ -612,6 +625,7 @@ describe("Refine transport handshake", () => {
     [
       "an unknown activation style",
       {
+        automaticChecksEnabled: true,
         quickApply: {
           ...DEFAULT_PRESENTATION_INTERACTION.quickApply,
           activationStyle: "showTip",
@@ -642,7 +656,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 2 },
+        protocol: { major: 2, minor: 3 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -774,7 +788,7 @@ describe("Refine transport handshake", () => {
             sent.push(value);
             frames.push({
               type: "welcome",
-              protocol: { major: 2, minor: 2 },
+              protocol: { major: 2, minor: 3 },
               serverEpoch: "epoch-1",
               runResumed: false,
               limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -833,7 +847,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 2 },
+        protocol: { major: 2, minor: 3 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
@@ -870,7 +884,7 @@ function endpointLocator(): EndpointLocator {
       launchToken: "secret-1",
       serverEpoch: "epoch-1",
       protocolMajor: 2,
-      protocolMinor: 2,
+      protocolMinor: 3,
       pid: 123,
     }),
   };
@@ -904,7 +918,7 @@ async function connectedEventFixture() {
   const connector = connectionConnector(frames, [], () => {
     frames.push({
       type: "welcome",
-      protocol: { major: 2, minor: 2 },
+      protocol: { major: 2, minor: 3 },
       serverEpoch: "epoch-1",
       runResumed: false,
       limits: { maxFrameBytes: 4_194_304, maxSources: 2 },
