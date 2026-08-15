@@ -307,6 +307,16 @@ describe("RefineIntegration", () => {
     if (!initialOpen) {
       throw new Error("expected openDocument command");
     }
+    const localPendingRevision = host.currentPresentation?.presentationRevision ?? 0;
+
+    engine.emit(pendingLifecyclePresentation("pending-before-check"), initialOpen.id);
+    await vi.waitFor(() => {
+      expect(host.currentPresentation?.state.type).toBe("pending");
+      expect(host.currentPresentation?.presentationRevision).toBeGreaterThan(
+        localPendingRevision,
+      );
+    });
+    expect(host.currentPresentation?.checkGeneration).toBe(0);
 
     engine.emit(progressivePresentation("check-1", 1), initialOpen.id);
     await vi.waitFor(() =>

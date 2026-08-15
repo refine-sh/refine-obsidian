@@ -1057,11 +1057,15 @@ class IntegrationRun {
       resumableCheck?.terminalOwnerCheckId === checkId
         ? resumableCheck.checkId
         : checkId;
-    if (this.currentCheckLineageId !== checkLineageId) {
-      this.checkGeneration += 1;
+    const carriesCheckLineage =
+      content.status !== "pending" && content.status !== "closed";
+    if (carriesCheckLineage) {
+      if (this.currentCheckLineageId !== checkLineageId) {
+        this.checkGeneration += 1;
+      }
+      this.currentCheckLineageId = checkLineageId;
     }
     this.currentCheckId = checkId;
-    this.currentCheckLineageId = checkLineageId;
     const pendingCheck = this.pendingCheck;
     if (
       pendingCheck?.commandId !== undefined &&
