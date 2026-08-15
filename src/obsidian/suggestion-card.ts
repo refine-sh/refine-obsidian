@@ -31,57 +31,43 @@ interface SuggestionCardLifecycle {
   readonly engage: () => void;
 }
 
+export interface SuggestionCardBinding {
+  readonly suggestion: PresentedSuggestion;
+  readonly appearance: PresentationAppearance;
+  readonly actions: SuggestionActions;
+  readonly renderExplanation: ExplanationRenderer;
+  readonly lifecycle: SuggestionCardLifecycle;
+}
+
 export function renderSuggestionCard(
   ownerDocument: Document,
-  suggestion: PresentedSuggestion,
-  appearance: PresentationAppearance,
-  actions: SuggestionActions,
-  renderExplanation: ExplanationRenderer,
-  lifecycle: SuggestionCardLifecycle,
+  binding: SuggestionCardBinding,
 ): HTMLElement {
-  const card = createSuggestionCardShell(
-    ownerDocument,
-    appearance,
-  );
-  bindSuggestionCard(
-    card,
-    suggestion,
-    appearance,
-    actions,
-    renderExplanation,
-    lifecycle,
-  );
+  const card = createSuggestionCardShell(ownerDocument, binding.appearance);
+  bindSuggestionCard(card, binding);
   return card;
 }
 
 export function rebindSuggestionCard(
   card: HTMLElement,
-  suggestion: PresentedSuggestion,
-  appearance: PresentationAppearance,
-  actions: SuggestionActions,
-  renderExplanation: ExplanationRenderer,
-  lifecycle: SuggestionCardLifecycle,
+  binding: SuggestionCardBinding,
 ): void {
   disposeSuggestionCard(card);
-  applySuggestionCardAppearance(card, appearance);
-  bindSuggestionCard(
-    card,
+  applySuggestionCardAppearance(card, binding.appearance);
+  bindSuggestionCard(card, binding);
+}
+
+function bindSuggestionCard(
+  card: HTMLElement,
+  binding: SuggestionCardBinding,
+): void {
+  const {
     suggestion,
     appearance,
     actions,
     renderExplanation,
     lifecycle,
-  );
-}
-
-function bindSuggestionCard(
-  card: HTMLElement,
-  suggestion: PresentedSuggestion,
-  appearance: PresentationAppearance,
-  actions: SuggestionActions,
-  renderExplanation: ExplanationRenderer,
-  lifecycle: SuggestionCardLifecycle,
-): void {
+  } = binding;
   cardClose.set(card, lifecycle.close);
   const ownerDocument = card.ownerDocument;
   const label = card.querySelector<HTMLElement>(

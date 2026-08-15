@@ -101,9 +101,13 @@ interface SuggestionRangeMatch {
 
 interface HoverCandidate {
   readonly match: SuggestionRangeMatch;
-  readonly documentRevision: string;
-  readonly checkGeneration: number;
+  readonly lineage: PresentationLineage;
 }
+
+type PresentationLineage = Pick<
+  PresentationSnapshot,
+  "documentRevision" | "checkGeneration"
+>;
 
 interface PointerPoint {
   readonly x: number;
@@ -417,7 +421,7 @@ function rangesTouch(
 }
 
 class PresentationInteractionController implements PluginValue {
-  private cardBinding = 0;
+  private cardBindingEpoch = 0;
   private element: HTMLElement | undefined;
   private cardMatch: SuggestionRangeMatch | undefined;
   private cardEngaged = false;
@@ -564,15 +568,17 @@ class PresentationInteractionController implements PluginValue {
     this.hoverReference = mode === "hover" ? reference : undefined;
     this.manualTrigger = trigger;
     this.cardMatch = match;
-    const binding = ++this.cardBinding;
+    const bindingEpoch = ++this.cardBindingEpoch;
     let card: HTMLElement | undefined;
     card = renderSuggestionCard(
       this.view.dom.ownerDocument,
-      suggestion,
-      presentation.snapshot.appearance,
-      presentation.actions,
-      presentation.renderExplanation,
-      this.cardLifecycle(() => card, mode, binding),
+      {
+        suggestion,
+        appearance: presentation.snapshot.appearance,
+        actions: presentation.actions,
+        renderExplanation: presentation.renderExplanation,
+        lifecycle: this.cardLifecycle(() => card, mode, bindingEpoch),
+      },
     );
     card.classList.add(
       "refine-tooltip--floating",
@@ -585,7 +591,7 @@ class PresentationInteractionController implements PluginValue {
     this.element = card;
     const ownerDocument = this.view.dom.ownerDocument;
     ownerDocument.body.append(card);
-    this.updateCardReference(reference, card, mode);
+    this.updateCardReference(reference, card, mode, bindingEpoch);
     if (mode === "hover") {
       card.addEventListener("mouseenter", this.handleCardMouseEnter);
       card.addEventListener("mouseleave", this.handleCardMouseLeave);
@@ -601,7 +607,7 @@ class PresentationInteractionController implements PluginValue {
     const shouldRestoreEditorFocus =
       restoreEditorFocus &&
       this.element?.contains(this.view.dom.ownerDocument.activeElement) === true;
-    this.cardBinding += 1;
+    this.cardBindingEpoch += 1;
     this.cancelPendingHover();
     this.cancelHoverClose();
     this.floatingCleanup?.();
@@ -655,8 +661,8 @@ class PresentationInteractionController implements PluginValue {
       !current ||
       !previousSuggestion ||
       !currentSuggestion ||
-      previous.snapshot.documentRevision !== current.snapshot.documentRevision ||
-      previous.snapshot.checkGeneration !== current.snapshot.checkGeneration
+      !isSuggestionBearingPresentation(current.snapshot) ||
+      !samePresentationLineage(previous.snapshot, current.snapshot)
     ) {
       if (card) {
         this.close();
@@ -672,27 +678,47 @@ class PresentationInteractionController implements PluginValue {
       : undefined;
     const replacementMatch = this.cardMatch === undefined
       ? undefined
-      : replacementSuggestionMatch(this.cardMatch, currentSuggestion);
+      : replacementSuggestionMatch(
+          this.cardMatch,
+          currentSuggestion,
+          this.view.state.doc.length,
+        );
+    if (this.cardMatch !== undefined && replacementMatch === undefined) {
+      this.close();
+      return;
+    }
+    const replacementManualTrigger =
+      mode === "manual" && this.manualTrigger && replacementMatch
+        ? { ...this.manualTrigger, position: replacementMatch.from }
+        : this.manualTrigger;
     const replacementReference = replacementMatch
       ? this.rangeReference(replacementMatch)
-      : mode === "manual" && this.manualTrigger
-        ? this.resolveManualSuggestionTrigger(this.manualTrigger)
+      : mode === "manual" && replacementManualTrigger
+        ? this.resolveManualSuggestionTrigger(replacementManualTrigger)
         : undefined;
     if (!replacementReference) {
       this.close();
       return;
     }
-    const binding = ++this.cardBinding;
+    const bindingEpoch = ++this.cardBindingEpoch;
     rebindSuggestionCard(
       card,
-      currentSuggestion,
-      current.snapshot.appearance,
-      current.actions,
-      current.renderExplanation,
-      this.cardLifecycle(() => card, mode, binding),
+      {
+        suggestion: currentSuggestion,
+        appearance: current.snapshot.appearance,
+        actions: current.actions,
+        renderExplanation: current.renderExplanation,
+        lifecycle: this.cardLifecycle(() => card, mode, bindingEpoch),
+      },
     );
     this.cardMatch = replacementMatch;
-    this.updateCardReference(replacementReference, card, mode);
+    this.manualTrigger = replacementManualTrigger;
+    this.updateCardReference(
+      replacementReference,
+      card,
+      mode,
+      bindingEpoch,
+    );
     if (cardHadFocus) {
       const focusTarget = focusedAction === undefined
         ? card
@@ -707,30 +733,35 @@ class PresentationInteractionController implements PluginValue {
     reference: ReferenceElement,
     card: HTMLElement,
     mode: SuggestionCardMode,
+    bindingEpoch: number,
   ): void {
     this.floatingCleanup?.();
     this.hoverReference = mode === "hover" ? reference : undefined;
     this.floatingCleanup = autoUpdate(reference, card, () => {
-      void this.positionCard(reference, card);
+      void this.positionCard(reference, card, bindingEpoch);
     });
   }
 
   private cardLifecycle(
     card: () => HTMLElement | undefined,
     mode: SuggestionCardMode,
-    binding: number,
+    bindingEpoch: number,
   ): { readonly close: () => void; readonly engage: () => void } {
     return {
       close: () => {
         const element = card();
-        if (!element || this.element !== element || this.cardBinding !== binding) {
+        if (
+          !element ||
+          this.element !== element ||
+          this.cardBindingEpoch !== bindingEpoch
+        ) {
           return;
         }
         mode === "manual" ? this.closeAndRestoreTrigger() : this.close();
       },
       engage: () => {
         const element = card();
-        if (element && this.cardBinding === binding) {
+        if (element && this.cardBindingEpoch === bindingEpoch) {
           this.engageCard(element);
         }
       },
@@ -784,12 +815,16 @@ class PresentationInteractionController implements PluginValue {
   private resolveManualSuggestionTrigger(
     trigger: ManualSuggestionTrigger,
   ): HTMLElement | undefined {
-    if (trigger.element.isConnected) {
-      return trigger.element;
-    }
-    return [...this.view.contentDOM.querySelectorAll<HTMLElement>(
-      "[data-refine-suggestion-id]",
-    )].find((candidate) => {
+    const candidates = [
+      trigger.element,
+      ...this.view.contentDOM.querySelectorAll<HTMLElement>(
+        "[data-refine-suggestion-id]",
+      ),
+    ];
+    return candidates.find((candidate) => {
+      if (!candidate.isConnected) {
+        return false;
+      }
       if (candidate.dataset.refineSuggestionId !== trigger.suggestionId) {
         return false;
       }
@@ -807,7 +842,11 @@ class PresentationInteractionController implements PluginValue {
   private async positionCard(
     reference: ReferenceElement,
     card: HTMLElement,
+    bindingEpoch: number,
   ): Promise<void> {
+    if (this.element !== card || this.cardBindingEpoch !== bindingEpoch) {
+      return;
+    }
     const { x, y, placement } = await computePosition(reference, card, {
       strategy: "fixed",
       placement: "top-end",
@@ -820,7 +859,7 @@ class PresentationInteractionController implements PluginValue {
         shift({ padding: suggestionCardViewportGutterPx }),
       ],
     });
-    if (this.element !== card) {
+    if (this.element !== card || this.cardBindingEpoch !== bindingEpoch) {
       return;
     }
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
@@ -1210,8 +1249,10 @@ class PresentationInteractionController implements PluginValue {
     this.cancelPendingHover();
     const candidate: HoverCandidate = {
       match,
-      documentRevision: presentation.snapshot.documentRevision,
-      checkGeneration: presentation.snapshot.checkGeneration,
+      lineage: {
+        documentRevision: presentation.snapshot.documentRevision,
+        checkGeneration: presentation.snapshot.checkGeneration,
+      },
     };
     this.pendingHover = candidate;
     this.hoverOpenTimer = ownerWindow.setTimeout(() => {
@@ -1251,8 +1292,8 @@ class PresentationInteractionController implements PluginValue {
     presentation: InstalledPresentation,
   ): SuggestionRangeMatch | undefined {
     if (
-      candidate.documentRevision !== presentation.snapshot.documentRevision ||
-      candidate.checkGeneration !== presentation.snapshot.checkGeneration
+      !isSuggestionBearingPresentation(presentation.snapshot) ||
+      !samePresentationLineage(candidate.lineage, presentation.snapshot)
     ) {
       return undefined;
     }
@@ -1262,7 +1303,11 @@ class PresentationInteractionController implements PluginValue {
         current.sourceId === candidate.match.suggestion.sourceId,
     );
     return suggestion
-      ? replacementSuggestionMatch(candidate.match, suggestion)
+      ? replacementSuggestionMatch(
+          candidate.match,
+          suggestion,
+          this.view.state.doc.length,
+        )
       : undefined;
   }
 
@@ -1516,12 +1561,17 @@ export function clearLivePresentationPreservingProvisional(
 function replacementSuggestionMatch(
   previous: Pick<SuggestionRangeMatch, "from" | "to">,
   suggestion: PresentedSuggestion,
+  documentLength: number,
 ): SuggestionRangeMatch | undefined {
-  const exact = suggestion.highlightRanges.find(
+  const validRanges = suggestion.highlightRanges.filter(
+    ({ location, length }) =>
+      location >= 0 && length >= 0 && location + length <= documentLength,
+  );
+  const exact = validRanges.find(
     ({ location, length }) =>
       location === previous.from && location + length === previous.to,
   );
-  const range = exact ?? [...suggestion.highlightRanges].sort((left, right) => {
+  const range = exact ?? [...validRanges].sort((left, right) => {
     const distance = distanceFromRange(previous.from, left) -
       distanceFromRange(previous.from, right);
     return distance !== 0
@@ -1537,6 +1587,20 @@ function replacementSuggestionMatch(
         to: range.location + range.length,
       }
     : undefined;
+}
+
+function isSuggestionBearingPresentation(
+  snapshot: PresentationSnapshot,
+): boolean {
+  return snapshot.state.type === "checking" || snapshot.state.type === "complete";
+}
+
+function samePresentationLineage(
+  left: PresentationLineage,
+  right: PresentationLineage,
+): boolean {
+  return left.documentRevision === right.documentRevision &&
+    left.checkGeneration === right.checkGeneration;
 }
 
 function pointerSide(
