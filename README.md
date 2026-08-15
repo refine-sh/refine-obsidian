@@ -50,7 +50,9 @@ machine. They only replace the host adapter and native presentation.
 - Highlight style, grammar/fluency colors, diff colors, and hidden-whitespace
   markers follow Refine's appearance settings without requiring another check.
 - Quick Apply enablement, activation style, and interaction shortcuts follow
-  Refine's settings without requiring another check.
+  Refine's settings without requiring another check. An open suggestion card
+  also accepts Refine's configured Apply key, even when cursor activation is
+  disabled.
 - Suggestion cards show the check language and model attribution supplied by
   Refine. Explain streams Refine's native Markdown explanation and identifies
   its independently selected model.

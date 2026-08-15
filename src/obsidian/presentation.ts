@@ -442,7 +442,7 @@ class PresentationInteractionController implements PluginValue {
   private suppressHoverUntilMove = false;
 
   constructor(private readonly view: EditorView) {
-    view.dom.addEventListener("keydown", this.handleQuickApplyKeyDown, true);
+    view.dom.addEventListener("keydown", this.handleSuggestionActionKeyDown, true);
     view.contentDOM.addEventListener("mousedown", this.handleMouseDown, true);
     view.contentDOM.addEventListener("mousemove", this.handleMouseMove, true);
     view.contentDOM.addEventListener("dragstart", this.handleDragStart, true);
@@ -495,7 +495,11 @@ class PresentationInteractionController implements PluginValue {
   }
 
   destroy(): void {
-    this.view.dom.removeEventListener("keydown", this.handleQuickApplyKeyDown, true);
+    this.view.dom.removeEventListener(
+      "keydown",
+      this.handleSuggestionActionKeyDown,
+      true,
+    );
     this.view.contentDOM.removeEventListener("mousedown", this.handleMouseDown, true);
     this.view.contentDOM.removeEventListener("mousemove", this.handleMouseMove, true);
     this.view.contentDOM.removeEventListener("dragstart", this.handleDragStart, true);
@@ -588,6 +592,7 @@ class PresentationInteractionController implements PluginValue {
     card.style.top = "0px";
     card.style.visibility = "hidden";
     card.dataset.refineSuggestionId = suggestionId;
+    card.addEventListener("keydown", this.handleSuggestionActionKeyDown, true);
     this.element = card;
     const ownerDocument = this.view.dom.ownerDocument;
     ownerDocument.body.append(card);
@@ -623,6 +628,11 @@ class PresentationInteractionController implements PluginValue {
       true,
     );
     if (this.element) {
+      this.element.removeEventListener(
+        "keydown",
+        this.handleSuggestionActionKeyDown,
+        true,
+      );
       disposeSuggestionCard(this.element);
       this.element.remove();
     }
@@ -869,16 +879,24 @@ class PresentationInteractionController implements PluginValue {
     card.dataset.refinePlacement = placement;
   }
 
-  private readonly handleQuickApplyKeyDown = (event: KeyboardEvent): void => {
-    // Cursor Quick Apply owns only keystrokes directed at CodeMirror's editing
-    // surface. Focused marks, Live Preview links, and editor widgets retain
-    // their own keyboard behavior even when the caret is inside an active scope.
-    if (event.target !== this.view.contentDOM) {
-      return;
-    }
+  private readonly handleSuggestionActionKeyDown = (
+    event: KeyboardEvent,
+  ): void => {
     const presentation = livePresentation(
       this.view.state.field(presentationField, false),
     );
+    const card = this.element;
+    if (card && this.cardOwnsShortcutEvent(card, event)) {
+      this.applyCardShortcut(card, event, presentation);
+      return;
+    }
+
+    // Cursor Quick Apply owns only keystrokes directed at CodeMirror's editing
+    // surface. Focused marks, Live Preview links, and editor widgets retain
+    // their own keyboard behavior when no suggestion card owns the shortcut.
+    if (event.target !== this.view.contentDOM) {
+      return;
+    }
     const suggestionId = presentation?.activeQuickApplySuggestionId;
     const configuration = presentation?.snapshot.interaction.quickApply;
     if (!presentation || !suggestionId || !configuration?.enabled) {
@@ -886,7 +904,7 @@ class PresentationInteractionController implements PluginValue {
     }
 
     if (matchesSuggestionActionKey(event, configuration.dismissKey)) {
-      this.consumeQuickApplyKey(event);
+      this.consumeSuggestionActionKey(event);
       this.clearQuickApplyActivation();
       return;
     }
@@ -902,12 +920,50 @@ class PresentationInteractionController implements PluginValue {
       return;
     }
 
-    this.consumeQuickApplyKey(event);
+    this.consumeSuggestionActionKey(event);
     this.clearQuickApplyActivation();
     void presentation.actions.apply(suggestion.id).catch(() => undefined);
   };
 
-  private consumeQuickApplyKey(event: KeyboardEvent): void {
+  private cardOwnsShortcutEvent(
+    card: HTMLElement,
+    event: KeyboardEvent,
+  ): boolean {
+    const target = event.target;
+    const ownerWindow = this.view.dom.ownerDocument.defaultView;
+    return ownerWindow !== null &&
+      target instanceof ownerWindow.Node &&
+      (card.contains(target) || this.view.contentDOM.contains(target));
+  }
+
+  private applyCardShortcut(
+    card: HTMLElement,
+    event: KeyboardEvent,
+    presentation: InstalledPresentation | undefined,
+  ): void {
+    if (
+      !presentation ||
+      !matchesSuggestionActionKey(
+        event,
+        presentation.snapshot.interaction.quickApply.applyKey,
+      )
+    ) {
+      return;
+    }
+    const apply = card.querySelector<HTMLButtonElement>(
+      '.refine-tooltip__actions > button[data-refine-action="apply"]',
+    );
+    if (!apply) {
+      return;
+    }
+
+    this.consumeSuggestionActionKey(event);
+    if (!apply.disabled && apply.getAttribute("aria-disabled") !== "true") {
+      apply.click();
+    }
+  }
+
+  private consumeSuggestionActionKey(event: KeyboardEvent): void {
     event.preventDefault();
     event.stopImmediatePropagation();
   }

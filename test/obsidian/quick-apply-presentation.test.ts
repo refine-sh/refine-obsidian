@@ -24,7 +24,7 @@ if (typeof Range.prototype.getBoundingClientRect !== "function") {
   Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
 }
 
-describe("Obsidian cursor Quick Apply", () => {
+describe("Obsidian suggestion Apply shortcuts", () => {
   const hosts: ObsidianWritingHost[] = [];
   const views: EditorView[] = [];
 
@@ -268,6 +268,316 @@ describe("Obsidian cursor Quick Apply", () => {
     expect(enter.defaultPrevented).toBe(false);
     expect(apply).not.toHaveBeenCalled();
     link.remove();
+  });
+
+  it("applies a visible hover card from the editor with cursor activation disabled", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost("A sentence.");
+      const apply = vi.fn(async () => ({ status: "completed" as const }));
+      host.present(
+        snapshot({
+          interaction: interaction({ enabled: false, applyKey: "tab" }),
+          suggestions: [suggestion({
+            activationRange: { location: 5, length: 5 },
+            highlightRanges: [{ location: 2, length: 2 }],
+          })],
+        }),
+        actions({ apply }),
+      );
+      vi.spyOn(view, "posAtCoords").mockReturnValue(3);
+      vi.spyOn(view, "coordsAtPos").mockReturnValue({
+        left: 8,
+        right: 12,
+        top: 8,
+        bottom: 20,
+      });
+      document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 10,
+          clientY: 10,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(220);
+      expect(document.querySelector(".refine-tooltip--hover")).not.toBeNull();
+
+      const before = view.state.doc.toString();
+      const tab = keydown("Tab", "Tab");
+      view.contentDOM.dispatchEvent(tab);
+
+      expect(tab.defaultPrevented).toBe(true);
+      expect(apply).toHaveBeenCalledOnce();
+      expect(apply).toHaveBeenCalledWith("suggestion");
+      expect(view.state.doc.toString()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives a portaled card's configured Apply key precedence over its focused action", () => {
+    const { host } = createHost("A sentence.");
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    const dismiss = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(
+      snapshot({
+        interaction: interaction({ enabled: false, applyKey: "return" }),
+        suggestions: [suggestion({
+          availableActions: ["dismiss", "apply"],
+        })],
+      }),
+      actions({ apply, dismiss }),
+    );
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+    const dismissButton = document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="dismiss"]',
+    );
+    dismissButton?.focus();
+
+    const enter = keydown("Enter", "Enter");
+    dismissButton?.dispatchEvent(enter);
+
+    expect(enter.defaultPrevented).toBe(true);
+    expect(apply).toHaveBeenCalledOnce();
+    expect(apply).toHaveBeenCalledWith("suggestion");
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it("consumes a second card shortcut while one Apply is pending without duplicating it", () => {
+    const { host } = createHost("A sentence.");
+    let finishApply: ((outcome: { readonly status: "completed" }) => void) |
+      undefined;
+    const apply = vi.fn(() =>
+      new Promise<{ readonly status: "completed" }>((resolve) => {
+        finishApply = resolve;
+      })
+    );
+    host.present(
+      snapshot({
+        interaction: interaction({ enabled: false, applyKey: "rightShift" }),
+        suggestions: [suggestion()],
+      }),
+      actions({ apply }),
+    );
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+    const applyButton = document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="apply"]',
+    );
+
+    const first = keydown("Shift", "ShiftRight", { shiftKey: true });
+    applyButton?.dispatchEvent(first);
+    const second = keydown("Shift", "ShiftRight", { shiftKey: true });
+    applyButton?.dispatchEvent(second);
+
+    expect(first.defaultPrevented).toBe(true);
+    expect(second.defaultPrevented).toBe(true);
+    expect(apply).toHaveBeenCalledOnce();
+    finishApply?.({ status: "completed" });
+  });
+
+  it("lets a card's configured Escape apply before the generic close shortcut", () => {
+    const { host } = createHost("A sentence.");
+    let finishApply: ((outcome: { readonly status: "completed" }) => void) |
+      undefined;
+    const apply = vi.fn(() =>
+      new Promise<{ readonly status: "completed" }>((resolve) => {
+        finishApply = resolve;
+      })
+    );
+    host.present(
+      snapshot({
+        interaction: interaction({ enabled: false, applyKey: "escape" }),
+        suggestions: [suggestion()],
+      }),
+      actions({ apply }),
+    );
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+    const applyButton = document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="apply"]',
+    );
+
+    const escape = keydown("Escape", "Escape");
+    applyButton?.dispatchEvent(escape);
+
+    expect(escape.defaultPrevented).toBe(true);
+    expect(apply).toHaveBeenCalledOnce();
+    expect(document.querySelector(".refine-tooltip--manual")).not.toBeNull();
+    expect(applyButton?.getAttribute("aria-busy")).toBe("true");
+    finishApply?.({ status: "completed" });
+  });
+
+  it("uses the latest synchronized card key and rebound Apply action", () => {
+    const { host } = createHost("A sentence.");
+    const oldApply = vi.fn(async () => ({ status: "completed" as const }));
+    const newApply = vi.fn(async () => ({ status: "completed" as const }));
+    const first = snapshot({
+      interaction: interaction({ enabled: false, applyKey: "tab" }),
+      suggestions: [suggestion()],
+    });
+    host.present(first, actions({ apply: oldApply }));
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+
+    host.present(
+      {
+        ...first,
+        presentationRevision: 2,
+        interaction: interaction({ enabled: false, applyKey: "rightShift" }),
+      },
+      actions({ apply: newApply }),
+    );
+    const applyButton = document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="apply"]',
+    );
+    const oldKey = keydown("Tab", "Tab");
+    applyButton?.dispatchEvent(oldKey);
+    const newKey = keydown("Shift", "ShiftRight", { shiftKey: true });
+    applyButton?.dispatchEvent(newKey);
+
+    expect(oldKey.defaultPrevented).toBe(false);
+    expect(newKey.defaultPrevented).toBe(true);
+    expect(oldApply).not.toHaveBeenCalled();
+    expect(newApply).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the configured card key native when the visible suggestion has no Apply", () => {
+    const { host } = createHost("A sentence.");
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(
+      snapshot({
+        interaction: interaction({ enabled: false, applyKey: "tab" }),
+        suggestions: [suggestion({ availableActions: ["dismiss"] })],
+      }),
+      actions({ apply }),
+    );
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+    const dismissButton = document.querySelector<HTMLButtonElement>(
+      '[data-refine-action="dismiss"]',
+    );
+
+    const tab = keydown("Tab", "Tab");
+    dismissButton?.dispatchEvent(tab);
+
+    expect(tab.defaultPrevented).toBe(false);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("does not fall through from a no-Apply card to another cursor suggestion", () => {
+    const { host, view } = createHost("0123456789");
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(
+      snapshot({
+        suggestions: [
+          suggestion({
+            id: "card-only-dismiss",
+            activationRange: { location: 0, length: 1 },
+            highlightRanges: [{ location: 0, length: 1 }],
+            availableActions: ["dismiss"],
+          }),
+          suggestion({
+            id: "cursor-apply",
+            activationRange: { location: 5, length: 2 },
+            highlightRanges: [{ location: 5, length: 1 }],
+          }),
+        ],
+      }),
+      actions({ apply }),
+    );
+    document.querySelector<HTMLElement>(
+      '[data-refine-suggestion-id="card-only-dismiss"]',
+    )?.dispatchEvent(keydown("Enter", "Enter"));
+    view.dispatch({ selection: { anchor: 6 }, userEvent: "select" });
+    expect(document.querySelector(".refine-tooltip--manual")).not.toBeNull();
+    expect(document.querySelector(
+      '[data-refine-suggestion-id="cursor-apply"]' +
+      ".refine-suggestion--quick-apply-active",
+    )).not.toBeNull();
+
+    const tab = keydown("Tab", "Tab");
+    view.contentDOM.dispatchEvent(tab);
+
+    expect(tab.defaultPrevented).toBe(false);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("lets an open card own its key from a focused editor descendant", async () => {
+    vi.useFakeTimers();
+    try {
+      const { host, view } = createHost("A sentence.");
+      const apply = vi.fn(async () => ({ status: "completed" as const }));
+      host.present(
+        snapshot({
+          interaction: interaction({ enabled: false, applyKey: "return" }),
+          suggestions: [suggestion({
+            highlightRanges: [{ location: 2, length: 2 }],
+          })],
+        }),
+        actions({ apply }),
+      );
+      vi.spyOn(view, "posAtCoords").mockReturnValue(3);
+      vi.spyOn(view, "coordsAtPos").mockReturnValue({
+        left: 8,
+        right: 12,
+        top: 8,
+        bottom: 20,
+      });
+      document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 10,
+          clientY: 10,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(220);
+      const link = document.createElement("a");
+      link.href = "#destination";
+      view.contentDOM.append(link);
+      link.focus();
+
+      const enter = keydown("Enter", "Enter");
+      link.dispatchEvent(enter);
+
+      expect(enter.defaultPrevented).toBe(true);
+      expect(apply).toHaveBeenCalledOnce();
+      link.remove();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a decoy Apply marker outside the card's owned action row", () => {
+    const { host } = createHost("A sentence.");
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(
+      snapshot({ suggestions: [suggestion()] }),
+      actions({ apply }),
+    );
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(
+      keydown("Enter", "Enter"),
+    );
+    const card = document.querySelector<HTMLElement>(".refine-tooltip--manual");
+    const decoy = document.createElement("button");
+    decoy.dataset.refineAction = "apply";
+    const decoyClick = vi.fn();
+    decoy.addEventListener("click", decoyClick);
+    card?.prepend(decoy);
+    const realApply = card?.querySelector<HTMLButtonElement>(
+      ".refine-tooltip__actions > button[data-refine-action=apply]",
+    );
+
+    realApply?.dispatchEvent(keydown("Tab", "Tab"));
+
+    expect(decoyClick).not.toHaveBeenCalled();
+    expect(apply).toHaveBeenCalledOnce();
   });
 
   it("keeps focusable suggestion labels free of editor-surface shortcut claims", () => {
