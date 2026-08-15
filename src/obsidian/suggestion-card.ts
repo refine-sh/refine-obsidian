@@ -407,7 +407,7 @@ function suggestionKindLabel(kind: PresentedSuggestion["kind"]): string {
     case "fluency":
       return "Fluency";
     case "mixed":
-      return "Grammar & Fluency";
+      return "Fluency";
   }
 }
 

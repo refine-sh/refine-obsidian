@@ -720,31 +720,41 @@ describe("Obsidian presentation", () => {
     await run;
   });
 
-  it("labels a mixed suggestion as grammar and fluency", async () => {
-    vi.useFakeTimers();
-    try {
-      const { host, view } = createHost("[create an link](URL)or", "mixed-label");
-      const baseSnapshot = presentation("mixed-label:0");
-      await host.present(
-        {
-          ...baseSnapshot,
-          suggestions: baseSnapshot.suggestions.map((suggestion) => ({
-            ...suggestion,
-            kind: "mixed" as const,
-          })),
-        },
-        actions(),
-      );
+  it.each([
+    ["grammar", "Grammar"],
+    ["fluency", "Fluency"],
+    ["mixed", "Fluency"],
+  ] as const)(
+    "presents a %s suggestion in Refine's %s category",
+    async (kind, category) => {
+      vi.useFakeTimers();
+      try {
+        const revision = `${kind}-label`;
+        const { host, view } = createHost(
+          "[create an link](URL)or",
+          revision,
+        );
+        const baseSnapshot = presentation(`${revision}:0`);
+        await host.present(
+          {
+            ...baseSnapshot,
+            suggestions: baseSnapshot.suggestions.map((suggestion) => ({
+              ...suggestion,
+              kind,
+            })),
+          },
+          actions(),
+        );
 
-      await hover(view, document.querySelector(".refine-suggestion"), 9);
+        await hover(view, document.querySelector(".refine-suggestion"), 9);
 
-      expect(document.querySelector(".refine-tooltip__caption")?.textContent).toBe(
-        "Grammar & Fluency - English (American)",
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+        expect(document.querySelector(".refine-tooltip__caption")?.textContent)
+          .toBe(`${category} - English (American)`);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("reports feedback without dismissing the suggestion card", async () => {
     const report = vi.fn(async () => ({ status: "completed" as const }));
