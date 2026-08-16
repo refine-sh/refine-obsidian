@@ -154,10 +154,10 @@ export class RefineTransport {
         hello,
         signal,
       );
+      if (signal.aborted) {
+        throw abortReason(signal);
+      }
       if (first.done) {
-        if (signal.aborted) {
-          throw abortReason(signal);
-        }
         throw new EngineConnectionError(
           "Refine closed the connection before welcome",
           "recoverable",

@@ -535,6 +535,45 @@ describe("Refine transport handshake", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("preserves the abort reason when a welcome races cancellation", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const close = vi.fn(async () => frames.close());
+    let markHelloSent: (() => void) | undefined;
+    const helloSent = new Promise<void>((resolve) => {
+      markHelloSent = resolve;
+    });
+    const connector: FrameConnector = {
+      connect: async () => ({
+        send: async () => markHelloSent?.(),
+        receive: () => frames,
+        close,
+      }),
+    };
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    });
+    const controller = new AbortController();
+    const reason = new DOMException("Run stopped", "AbortError");
+    const connecting = transport.connect(controller.signal);
+    const failure = connecting.catch((error: unknown) => error);
+    await helloSent;
+
+    frames.push({
+      type: "welcome",
+      protocol: { major: 2, minor: 4 },
+      serverEpoch: "epoch-1",
+      runResumed: false,
+      limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
+      capabilities: [],
+    });
+    queueMicrotask(() => controller.abort(reason));
+
+    await expect(failure).resolves.toBe(reason);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("preserves the abort reason when cancellation races the welcome deadline", async () => {
     vi.useFakeTimers();
     const frames = new AsyncQueue<unknown>();
