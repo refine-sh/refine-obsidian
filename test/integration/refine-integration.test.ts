@@ -2857,35 +2857,67 @@ describe("RefineIntegration", () => {
     await vi.waitFor(() =>
       expect(host.currentPresentation?.documentRevision).toBe("doc:2"),
     );
+    const releaseReplace = engine.blockNextSend("replaceDocument");
     finishApply?.({
       status: "applied",
       snapshot: result,
     });
 
     await vi.waitFor(() =>
-      expect(engine.commands.slice(-4).map(({ command }) => command.type)).toEqual([
+      expect(engine.commands.at(-1)?.command).toEqual({
+        type: "replaceDocument",
+        snapshot: later,
+      }),
+    );
+
+    const newest = snapshot("doc:3", "create a better link!");
+    host.currentSnapshot = newest;
+    host.observations.push({ type: "snapshot", snapshot: newest });
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:3",
+      attention: {
+        sourceId: "document",
+        caretOffset: 16,
+        visibleRanges: [{ location: 0, length: 21 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:3" });
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.documentRevision).toBe("doc:3"),
+    );
+    releaseReplace();
+
+    await vi.waitFor(() =>
+      expect(engine.commands.slice(-5).map(({ command }) => command.type)).toEqual([
         "completeApply",
+        "replaceDocument",
         "replaceDocument",
         "updateAttention",
         "requestCheck",
       ]),
     );
-    expect(engine.commands.at(-3)?.command).toEqual({
+    expect(engine.commands.at(-4)?.command).toEqual({
       type: "replaceDocument",
       snapshot: later,
     });
+    expect(engine.commands.at(-3)?.command).toEqual({
+      type: "replaceDocument",
+      snapshot: newest,
+    });
     expect(engine.commands.at(-2)?.command).toEqual({
       type: "updateAttention",
-      revision: "doc:2",
+      revision: "doc:3",
       attention: {
         sourceId: "document",
-        caretOffset: 14,
-        visibleRanges: [{ location: 0, length: 14 }],
+        caretOffset: 16,
+        visibleRanges: [{ location: 0, length: 21 }],
       },
     });
     expect(
       engine.commands.some(({ command }) =>
-        command.type === "updateAttention" && command.revision === "doc:1"
+        command.type === "updateAttention" &&
+        (command.revision === "doc:1" || command.revision === "doc:2")
       ),
     ).toBe(false);
     engine.emit({ type: "actionCompleted", actionId: perform.actionId });

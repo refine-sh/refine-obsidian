@@ -1515,29 +1515,50 @@ class IntegrationRun {
         await this.restartHostObservation();
       }
     } finally {
-      const queued = this.queuedSnapshotDuringApply;
-      this.queuedSnapshotDuringApply = undefined;
-      const attentionAtFlush = this.latestAttention;
-      const checkAtFlush = this.pendingCheck;
       try {
-        if (
-          this.session &&
-          queued &&
-          queued.revision !== outcomeSnapshot?.revision &&
-          queued.revision === this.latestSnapshot?.revision
-        ) {
-          await this.send({ type: "replaceDocument", snapshot: queued });
+        let submittedRevision = outcomeSnapshot?.revision;
+        while (this.session) {
+          const queued = this.queuedSnapshotDuringApply;
+          this.queuedSnapshotDuringApply = undefined;
+          if (
+            queued &&
+            queued.revision !== submittedRevision &&
+            queued.revision === this.latestSnapshot?.revision
+          ) {
+            const receipt = await this.send({
+              type: "replaceDocument",
+              snapshot: queued,
+            });
+            if (!receipt) {
+              break;
+            }
+            submittedRevision = queued.revision;
+          }
+          if (this.queuedSnapshotDuringApply) {
+            continue;
+          }
+
+          const attentionAtFlush = this.latestAttention;
+          const checkAtFlush = this.pendingCheck;
+          await this.sendLatestAttention(true);
+          if (
+            this.queuedSnapshotDuringApply ||
+            this.latestAttention !== attentionAtFlush
+          ) {
+            continue;
+          }
+          await this.sendPendingCheck(true);
+          if (
+            this.queuedSnapshotDuringApply ||
+            this.latestAttention !== attentionAtFlush ||
+            this.pendingCheck !== checkAtFlush
+          ) {
+            continue;
+          }
+          break;
         }
-        await this.sendLatestAttention(true);
-        await this.sendPendingCheck(true);
       } finally {
         this.applyLeaseActionId = undefined;
-      }
-      if (this.latestAttention !== attentionAtFlush) {
-        await this.sendLatestAttention();
-      }
-      if (this.pendingCheck !== checkAtFlush) {
-        await this.sendPendingCheck();
       }
     }
   }
