@@ -38,16 +38,13 @@ Features:
 
 - macOS 14 or later
 - Obsidian desktop 1.5.0 or later
-- [Refine for Mac](https://refine.sh/) installed and running
-- An active Refine trial or license
+- [Refine for Mac](https://refine.sh/) 1.35 pr later
 
-New to Refine? Start a full-featured seven-day trial with no credit card
-required. See the current options on the [Refine website](https://refine.sh/#pricing).
+Refine includes a full-featured seven-day trial with no credit card required.
 
 ## Install
 
 1. [Download Refine for Mac](https://refine.sh/), open it, and complete setup.
-   Download and select a local model if you want private, offline writing checks.
 2. In Obsidian, open **Settings → Community plugins → Browse**.
 3. Search for **Refine**, then select **Install** and **Enable**. You can also
    [open the Refine plugin in Obsidian](obsidian://show-plugin?id=refine).
@@ -136,13 +133,6 @@ works only in Obsidian desktop on Mac.
 
 No. The plugin checks the active Markdown note in Editing view. It does not run
 vault-wide checks or check Reading view.
-
-### Will an accepted correction damage my Markdown?
-
-The plugin reads the note's canonical Markdown even when Live Preview hides
-syntax. Before applying a correction, it confirms that the note revision and
-expected text still match. If they do not, Refine refuses the stale change and
-asks for a new check.
 
 ## Get started
 
