@@ -22,6 +22,7 @@ interface ProtocolFixture {
   readonly rejection: HandshakeRejectedFrame;
   readonly welcome: WelcomeFrame;
   readonly openDocument: ClientCommandEnvelope;
+  readonly updateAttention: ClientCommandEnvelope;
   readonly selectionCheck: ClientCommandEnvelope;
   readonly checkingPresentation: ServerEventEnvelope;
   readonly presentation: ServerEventEnvelope;
@@ -42,6 +43,18 @@ describe("integration protocol V2 golden transcript", () => {
         type: "openDocument",
         snapshot: {
           sources: [{ sourceSyntax: "markdownDocument" }],
+        },
+      },
+    });
+    expect(fixture.updateAttention).toMatchObject({
+      sequence: 2,
+      command: {
+        type: "updateAttention",
+        revision: "fixture:0",
+        attention: {
+          sourceId: "document",
+          caretOffset: 21,
+          visibleRanges: [{ location: 0, length: 23 }],
         },
       },
     });
@@ -147,10 +160,15 @@ describe("integration protocol V2 golden transcript", () => {
     );
     expect(sent[1]).toEqual(fixture.openDocument);
     await session.send(
+      fixture.updateAttention.command,
+      fixture.updateAttention.id,
+    );
+    expect(sent[2]).toEqual(fixture.updateAttention);
+    await session.send(
       fixture.selectionCheck.command,
       fixture.selectionCheck.id,
     );
-    expect(sent[2]).toEqual(fixture.selectionCheck);
+    expect(sent[3]).toEqual(fixture.selectionCheck);
 
     const events = session.events(new AbortController().signal)[Symbol.asyncIterator]();
     frames.push(fixture.checkingPresentation);
@@ -168,6 +186,12 @@ describe("integration protocol V2 golden transcript", () => {
       done: false,
       value: fixture.applyRequested,
     });
+
+    await session.send(
+      fixture.completeApply.command,
+      fixture.completeApply.id,
+    );
+    expect(sent[4]).toEqual(fixture.completeApply);
 
     await session.close();
   });

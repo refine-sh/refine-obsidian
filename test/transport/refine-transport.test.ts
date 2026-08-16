@@ -104,6 +104,31 @@ describe("Refine transport handshake", () => {
       },
     });
 
+    const attentionCommand = await session.send({
+      type: "updateAttention",
+      revision: "doc:0",
+      attention: {
+        sourceId: "document",
+        caretOffset: 9,
+        visibleRanges: [{ location: 0, length: 14 }],
+      },
+    }, "command-attention");
+    expect(attentionCommand).toEqual({ sequence: 2, id: "command-attention" });
+    expect(sent[2]).toEqual({
+      type: "command",
+      sequence: 2,
+      id: "command-attention",
+      command: {
+        type: "updateAttention",
+        revision: "doc:0",
+        attention: {
+          sourceId: "document",
+          caretOffset: 9,
+          visibleRanges: [{ location: 0, length: 14 }],
+        },
+      },
+    });
+
     const events = session.events(controller.signal)[Symbol.asyncIterator]();
     frames.push({
       type: "event",

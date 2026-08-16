@@ -258,6 +258,202 @@ describe("RefineIntegration", () => {
     await run;
   });
 
+  it("sends current attention after its snapshot and before an explicit check", async () => {
+    const host = new FakeHost(snapshot("doc:0", "First sentence. Second sentence."));
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:0",
+      attention: {
+        sourceId: "document",
+        caretOffset: 18,
+        visibleRanges: [{ location: 0, length: 32 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:0" });
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+
+    await vi.waitFor(() =>
+      expect(engine.commands.map(({ command }) => command)).toEqual([
+        {
+          type: "openDocument",
+          snapshot: snapshot("doc:0", "First sentence. Second sentence."),
+        },
+        {
+          type: "updateAttention",
+          revision: "doc:0",
+          attention: {
+            sourceId: "document",
+            caretOffset: 18,
+            visibleRanges: [{ location: 0, length: 32 }],
+          },
+        },
+        { type: "requestCheck", revision: "doc:0" },
+      ]),
+    );
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("coalesces adjacent queued attention for one revision to the newest", async () => {
+    const host = new FakeHost(snapshot("doc:0", "First sentence. Second sentence."));
+    const engine = new FakeEngine();
+    const releaseReplace = engine.blockNextSend("replaceDocument");
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+
+    const changed = snapshot("doc:1", "First sentence! Second sentence.");
+    host.currentSnapshot = changed;
+    host.observations.push({ type: "snapshot", snapshot: changed });
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command.type).toBe("replaceDocument"),
+    );
+    for (const caretOffset of [1, 2, 3]) {
+      host.observations.push({
+        type: "attentionChanged",
+        revision: "doc:1",
+        attention: {
+          sourceId: "document",
+          caretOffset,
+          visibleRanges: [{ location: 0, length: 32 }],
+        },
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseReplace();
+
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command).toMatchObject({
+        type: "updateAttention",
+        attention: { caretOffset: 3 },
+      }),
+    );
+    expect(
+      engine.commands.filter(({ command }) => command.type === "updateAttention"),
+    ).toHaveLength(1);
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("does not coalesce attention across an explicit-check barrier", async () => {
+    const host = new FakeHost(snapshot("doc:0", "First sentence. Second sentence."));
+    const engine = new FakeEngine();
+    const releaseReplace = engine.blockNextSend("replaceDocument");
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+
+    const changed = snapshot("doc:1", "First sentence! Second sentence.");
+    host.currentSnapshot = changed;
+    host.observations.push({ type: "snapshot", snapshot: changed });
+    await vi.waitFor(() =>
+      expect(engine.commands.at(-1)?.command.type).toBe("replaceDocument"),
+    );
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 1,
+        visibleRanges: [{ location: 0, length: 32 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:1" });
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 2,
+        visibleRanges: [{ location: 0, length: 32 }],
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseReplace();
+
+    await vi.waitFor(() =>
+      expect(engine.commands.slice(-3).map(({ command }) => command.type)).toEqual([
+        "updateAttention",
+        "requestCheck",
+        "updateAttention",
+      ]),
+    );
+    expect(engine.commands.at(-1)?.command).toMatchObject({
+      type: "updateAttention",
+      attention: { caretOffset: 2 },
+    });
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
+  it("invalidates old attention at a snapshot barrier", async () => {
+    const host = new FakeHost(snapshot("doc:0", "First sentence."));
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:0",
+      attention: {
+        sourceId: "document",
+        caretOffset: 1,
+        visibleRanges: [{ location: 0, length: 15 }],
+      },
+    });
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(2));
+
+    const changed = snapshot("doc:1", "Second sentence.");
+    host.currentSnapshot = changed;
+    host.observations.push({ type: "snapshot", snapshot: changed });
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:0",
+      attention: {
+        sourceId: "document",
+        caretOffset: 2,
+        visibleRanges: [{ location: 0, length: 15 }],
+      },
+    });
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 3,
+        visibleRanges: [{ location: 0, length: 16 }],
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(engine.commands.slice(-2).map(({ command }) => command.type)).toEqual([
+        "replaceDocument",
+        "updateAttention",
+      ]),
+    );
+    expect(
+      engine.commands
+        .flatMap(({ command }) =>
+          command.type === "updateAttention" ? [command.revision] : []
+        ),
+    ).toEqual(["doc:0", "doc:1"]);
+
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
   it("retains the latest engine presentation settings across locally synthesized presentations", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new FakeEngine();
@@ -2160,7 +2356,7 @@ describe("RefineIntegration", () => {
     await run;
   });
 
-  it("replays only an Apply receipt after reconnect and never repeats the host mutation", async () => {
+  it("reconnects with an Apply receipt, latest snapshot, attention, then pending check", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new ReconnectingEngine();
     const integration = createRefineIntegration({ enginePort: engine, reconnectDelayMs: 0 });
@@ -2210,6 +2406,19 @@ describe("RefineIntegration", () => {
     await vi.waitFor(() =>
       expect(engine.sessions[0]?.commands.at(-1)?.command.type).toBe("completeApply"),
     );
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 8,
+        visibleRanges: [{ location: 0, length: 23 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:1" });
+    await vi.waitFor(() =>
+      expect(engine.sessions[0]?.commands.at(-1)?.command.type).toBe("requestCheck"),
+    );
     engine.sessions[0]?.events.close();
 
     await vi.waitFor(() => expect(engine.sessions).toHaveLength(2));
@@ -2217,7 +2426,18 @@ describe("RefineIntegration", () => {
     expect(engine.sessions[1]?.commands.map(({ command }) => command.type)).toEqual([
       "completeApply",
       "openDocument",
+      "updateAttention",
+      "requestCheck",
     ]);
+    expect(engine.sessions[1]?.commands[2]?.command).toEqual({
+      type: "updateAttention",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 8,
+        visibleRanges: [{ location: 0, length: 23 }],
+      },
+    });
     engine.sessions[1]?.events.push({
       type: "event",
       sequence: 1,
@@ -2225,6 +2445,55 @@ describe("RefineIntegration", () => {
       event: { type: "actionCompleted", actionId: perform.actionId },
     });
     await expect(apply).resolves.toEqual({ status: "completed" });
+
+    controller.abort();
+    host.observations.close();
+    engine.sessions[1]?.events.close();
+    await run;
+  });
+
+  it("retains current attention when stale attention arrives before reconnect", async () => {
+    const host = new FakeHost(snapshot("doc:0", "First sentence."));
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:0",
+      attention: {
+        sourceId: "document",
+        caretOffset: 1,
+        visibleRanges: [{ location: 0, length: 15 }],
+      },
+    });
+    const engine = new ReconnectingEngine();
+    const integration = createRefineIntegration({ enginePort: engine, reconnectDelayMs: 0 });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.sessions[0]?.commands).toHaveLength(2));
+
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:stale",
+      attention: {
+        sourceId: "document",
+        caretOffset: 9,
+        visibleRanges: [{ location: 0, length: 15 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:0" });
+    await vi.waitFor(() =>
+      expect(engine.sessions[0]?.commands.at(-1)?.command.type).toBe("requestCheck"),
+    );
+    engine.sessions[0]?.events.close();
+
+    await vi.waitFor(() => expect(engine.sessions).toHaveLength(2));
+    expect(engine.sessions[1]?.commands.map(({ command }) => command.type)).toEqual([
+      "openDocument",
+      "updateAttention",
+      "requestCheck",
+    ]);
+    expect(engine.sessions[1]?.commands[1]?.command).toMatchObject({
+      type: "updateAttention",
+      attention: { caretOffset: 1 },
+    });
 
     controller.abort();
     host.observations.close();
@@ -2516,7 +2785,7 @@ describe("RefineIntegration", () => {
     await run;
   });
 
-  it("receipts Apply readback before forwarding a later observed revision", async () => {
+  it("receipts Apply readback before a later snapshot, its attention, and its check", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     let finishApply: ((outcome: HostApplyOutcome) => void) | undefined;
     host.apply.mockImplementationOnce(
@@ -2560,27 +2829,65 @@ describe("RefineIntegration", () => {
     });
     await vi.waitFor(() => expect(host.apply).toHaveBeenCalledTimes(1));
 
+    const result = snapshot("doc:1", "create a link");
+    host.currentSnapshot = result;
+    host.observations.push({ type: "snapshot", snapshot: result });
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 8,
+        visibleRanges: [{ location: 0, length: 13 }],
+      },
+    });
     const later = snapshot("doc:2", "create a link!");
     host.currentSnapshot = later;
     host.observations.push({ type: "snapshot", snapshot: later });
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:2",
+      attention: {
+        sourceId: "document",
+        caretOffset: 14,
+        visibleRanges: [{ location: 0, length: 14 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:2" });
     await vi.waitFor(() =>
       expect(host.currentPresentation?.documentRevision).toBe("doc:2"),
     );
     finishApply?.({
       status: "applied",
-      snapshot: snapshot("doc:1", "create a link"),
+      snapshot: result,
     });
 
     await vi.waitFor(() =>
-      expect(engine.commands.slice(-2).map(({ command }) => command.type)).toEqual([
+      expect(engine.commands.slice(-4).map(({ command }) => command.type)).toEqual([
         "completeApply",
         "replaceDocument",
+        "updateAttention",
+        "requestCheck",
       ]),
     );
-    expect(engine.commands.at(-1)?.command).toEqual({
+    expect(engine.commands.at(-3)?.command).toEqual({
       type: "replaceDocument",
       snapshot: later,
     });
+    expect(engine.commands.at(-2)?.command).toEqual({
+      type: "updateAttention",
+      revision: "doc:2",
+      attention: {
+        sourceId: "document",
+        caretOffset: 14,
+        visibleRanges: [{ location: 0, length: 14 }],
+      },
+    });
+    expect(
+      engine.commands.some(({ command }) =>
+        command.type === "updateAttention" && command.revision === "doc:1"
+      ),
+    ).toBe(false);
     engine.emit({ type: "actionCompleted", actionId: perform.actionId });
     await expect(apply).resolves.toEqual({ status: "completed" });
 
@@ -3442,6 +3749,27 @@ class FakeEngine {
   eventsRead = 0;
   private commandSequence = 0;
   private eventSequence = 0;
+  private blockedSend:
+    | {
+        readonly type: ClientCommand["type"];
+        readonly promise: Promise<void>;
+        readonly release: () => void;
+      }
+    | undefined;
+
+  blockNextSend(type: ClientCommand["type"]): () => void {
+    let release: (() => void) | undefined;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blocked = {
+      type,
+      promise,
+      release: () => release?.(),
+    };
+    this.blockedSend = blocked;
+    return blocked.release;
+  }
 
   connect(): Promise<RefineTransportSession> {
     return Promise.resolve({
@@ -3451,6 +3779,11 @@ class FakeEngine {
         this.commandSequence += 1;
         const id = commandId ?? `command-${this.commandSequence}`;
         this.commands.push({ command, id });
+        if (this.blockedSend?.type === command.type) {
+          const blocked = this.blockedSend;
+          this.blockedSend = undefined;
+          await blocked.promise;
+        }
         return { sequence: this.commandSequence, id };
       },
       events: () => this.readEvents(),

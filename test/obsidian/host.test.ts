@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
-import { EditorState, type Extension } from "@codemirror/state";
+import { foldEffect, foldState, unfoldEffect } from "@codemirror/language";
+import {
+  EditorSelection,
+  EditorState,
+  type Extension,
+} from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -46,6 +51,13 @@ describe("ObsidianWritingHost", () => {
         },
       },
     });
+    await expect(observations.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "test:0",
+      },
+    });
 
     view.dispatch({ changes: { from: 8, to: 10, insert: "a" } });
 
@@ -57,6 +69,225 @@ describe("ObsidianWritingHost", () => {
           revision: "test:1",
           sources: [{ text: "[create a link](URL)or" }],
         },
+      },
+    });
+    await expect(observations.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "test:1",
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("reports the current caret and visible source after the initial snapshot", async () => {
+    const view = createView("A😀B");
+    view.dispatch({ selection: { anchor: 3 } });
+    const host = new ObsidianWritingHost(view, { sessionId: "attention" });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+
+    await expect(observations.next()).resolves.toMatchObject({
+      done: false,
+      value: { type: "snapshot", snapshot: { revision: "attention:0" } },
+    });
+    const attention = await Promise.race([
+      observations.next(),
+      new Promise<{ readonly timedOut: true }>((resolve) => {
+        setTimeout(() => resolve({ timedOut: true }), 0);
+      }),
+    ]);
+
+    expect(attention).toEqual({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "attention:0",
+        attention: {
+          sourceId: "document",
+          caretOffset: 3,
+          visibleRanges: [{ location: 0, length: 4 }],
+        },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("updates attention without inventing a caret for a noncollapsed selection", async () => {
+    const view = createView("abcdef");
+    const host = new ObsidianWritingHost(view, { sessionId: "selection-attention" });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    view.dispatch({ selection: { anchor: 1, head: 4 } });
+
+    await expect(nextSoon(observations)).resolves.toEqual({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "selection-attention:0",
+        attention: {
+          sourceId: "document",
+          visibleRanges: [{ location: 0, length: 6 }],
+        },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("omits the caret when the editor has multiple selections", async () => {
+    const view = createView("abcdef", [EditorState.allowMultipleSelections.of(true)]);
+    const host = new ObsidianWritingHost(view, { sessionId: "multi-selection-attention" });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    view.dispatch({
+      selection: EditorSelection.create([
+        EditorSelection.cursor(1),
+        EditorSelection.cursor(4),
+      ]),
+    });
+
+    await expect(nextSoon(observations)).resolves.toEqual({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "multi-selection-attention:0",
+        attention: {
+          sourceId: "document",
+          visibleRanges: [{ location: 0, length: 6 }],
+        },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("coalesces adjacent same-revision attention to the newest coordinates", async () => {
+    const view = createView("abcdef");
+    const host = new ObsidianWritingHost(view, { sessionId: "coalesced-attention" });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    view.dispatch({ selection: { anchor: 1 } });
+    view.dispatch({ selection: { anchor: 2 } });
+    view.dispatch({ selection: { anchor: 3 } });
+
+    await expect(observations.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "coalesced-attention:0",
+        attention: { caretOffset: 3 },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("reports disjoint visible ranges when a fold hides source", async () => {
+    const view = createView("before hidden after", [foldState]);
+    const host = new ObsidianWritingHost(view, { sessionId: "fold-attention" });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    view.dispatch({ effects: foldEffect.of({ from: 7, to: 13 }) });
+
+    await expect(nextSoon(observations)).resolves.toEqual({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "fold-attention:0",
+        attention: {
+          sourceId: "document",
+          caretOffset: 0,
+          visibleRanges: [
+            { location: 0, length: 7 },
+            { location: 13, length: 6 },
+          ],
+        },
+      },
+    });
+
+    view.dispatch({ effects: unfoldEffect.of({ from: 7, to: 13 }) });
+
+    await expect(nextSoon(observations)).resolves.toEqual({
+      done: false,
+      value: {
+        type: "attentionChanged",
+        revision: "fold-attention:0",
+        attention: {
+          sourceId: "document",
+          caretOffset: 0,
+          visibleRanges: [{ location: 0, length: 19 }],
+        },
+      },
+    });
+
+    await expect(host.validateRevision("fold-attention:0")).resolves.toEqual({
+      status: "current",
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("retains attention on focus loss and refreshes it on focus return", async () => {
+    const view = createView("abcdef");
+    const host = new ObsidianWritingHost(view, { sessionId: "focus-attention" });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    view.contentDOM.focus();
+    await expect(observations.next()).resolves.toMatchObject({
+      value: {
+        type: "attentionChanged",
+        revision: "focus-attention:0",
+      },
+    });
+
+    const afterFocusLoss = observations.next();
+    view.contentDOM.blur();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    view.dispatch({ selection: { anchor: 3 } });
+    await expect(Promise.race([
+      afterFocusLoss.then(() => "observation" as const),
+      new Promise<"no-observation">((resolve) => {
+        setTimeout(() => resolve("no-observation"), 25);
+      }),
+    ])).resolves.toBe("no-observation");
+
+    view.contentDOM.focus();
+    await expect(afterFocusLoss).resolves.toMatchObject({
+      value: {
+        type: "attentionChanged",
+        revision: "focus-attention:0",
+        attention: { caretOffset: 3 },
       },
     });
 
@@ -331,4 +562,17 @@ function inertActions(): SuggestionActions {
     },
     report: async () => ({ status: "completed" }),
   };
+}
+
+async function nextSoon<T>(iterator: AsyncIterator<T>): Promise<IteratorResult<T>> {
+  const result = await Promise.race([
+    iterator.next(),
+    new Promise<"timedOut">((resolve) => {
+      setTimeout(() => resolve("timedOut"), 0);
+    }),
+  ]);
+  if (result === "timedOut") {
+    throw new Error("expected an observation without waiting for another host event");
+  }
+  return result;
 }

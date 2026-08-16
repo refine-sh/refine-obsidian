@@ -10,6 +10,7 @@ import type {
   PresentationInteraction,
   PresentedSuggestion,
   SuggestionActionKey,
+  WritingAttention,
 } from "../integration/types";
 import type { MAX_FRAME_BYTES } from "./frame-codec";
 
@@ -77,6 +78,11 @@ export interface HandshakeRejectedFrame {
 export type ClientCommand =
   | { readonly type: "openDocument"; readonly snapshot: DocumentSnapshot }
   | { readonly type: "replaceDocument"; readonly snapshot: DocumentSnapshot }
+  | {
+      readonly type: "updateAttention";
+      readonly revision: DocumentRevision;
+      readonly attention: WritingAttention;
+    }
   | {
       readonly type: "requestCheck";
       readonly revision: DocumentRevision;

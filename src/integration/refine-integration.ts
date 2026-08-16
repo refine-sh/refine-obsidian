@@ -23,6 +23,7 @@ import type {
   RefineIntegration,
   SuggestionActionKind,
   SuggestionActions,
+  WritingAttention,
   WritingHost,
 } from "./types";
 import {
@@ -107,6 +108,7 @@ interface ResumableCheckLifecycle {
 }
 
 const MAX_BUFFERED_ENGINE_EVENTS = 128;
+const MAX_BUFFERED_HOST_OBSERVATIONS = 128;
 
 class IntegrationRun {
   private readonly runId = globalThis.crypto.randomUUID();
@@ -141,6 +143,9 @@ class IntegrationRun {
   private readonly retiredRevisions = new Set<string>();
   private session: RefineTransportSession | undefined;
   private latestSnapshot: DocumentSnapshot | undefined;
+  private latestAttention:
+    | { readonly revision: string; readonly attention: WritingAttention }
+    | undefined;
   private pendingCheck:
     | {
         revision: string;
@@ -288,15 +293,26 @@ class IntegrationRun {
   ): Promise<void> {
     let observations = initial;
     while (true) {
+      const buffered = new AsyncQueue<HostObservation>(
+        MAX_BUFFERED_HOST_OBSERVATIONS,
+        coalesceQueuedHostObservation,
+      );
+      void this.readHostObservations(observations.iterator, buffered);
       while (!this.lifecycle.signal.aborted) {
-        const next = await observations.iterator.next();
+        const next = await buffered.next();
         if (next.done) {
           break;
         }
-        if (next.value.type === "snapshot") {
-          await this.acceptSnapshot(next.value.snapshot);
-        } else {
-          await this.acceptCheckRequest(next.value.revision, next.value.intent);
+        switch (next.value.type) {
+          case "snapshot":
+            await this.acceptSnapshot(next.value.snapshot);
+            break;
+          case "attentionChanged":
+            await this.acceptAttention(next.value.revision, next.value.attention);
+            break;
+          case "checkRequested":
+            await this.acceptCheckRequest(next.value.revision, next.value.intent);
+            break;
         }
       }
 
@@ -325,6 +341,25 @@ class IntegrationRun {
         restart.reject(error);
         throw error;
       }
+    }
+  }
+
+  private async readHostObservations(
+    iterator: AsyncIterator<HostObservation>,
+    buffered: AsyncQueue<HostObservation>,
+  ): Promise<void> {
+    try {
+      while (!this.lifecycle.signal.aborted) {
+        const next = await iterator.next();
+        if (next.done) {
+          return;
+        }
+        buffered.push(next.value);
+      }
+    } catch (error) {
+      buffered.fail(error);
+    } finally {
+      buffered.close();
     }
   }
 
@@ -880,8 +915,21 @@ class IntegrationRun {
       return;
     }
     this.pendingCheck = intent === undefined ? { revision } : { revision, intent };
-    if (this.session && this.opened) {
+    if (this.session && this.opened && !this.applyLeaseActionId) {
       await this.sendPendingCheck();
+    }
+  }
+
+  private async acceptAttention(
+    revision: string,
+    attention: WritingAttention,
+  ): Promise<void> {
+    if (revision !== this.latestSnapshot?.revision) {
+      return;
+    }
+    this.latestAttention = { revision, attention };
+    if (this.session && this.opened && !this.applyLeaseActionId) {
+      await this.send({ type: "updateAttention", revision, attention });
     }
   }
 
@@ -931,15 +979,35 @@ class IntegrationRun {
       throw new Error("Unable to open document on Refine engine connection");
     }
     this.opened = true;
+    await this.sendLatestAttention();
     await this.sendPendingCheck();
   }
 
-  private async sendPendingCheck(): Promise<void> {
+  private async sendLatestAttention(allowDuringApply = false): Promise<void> {
+    const current = this.latestAttention;
+    if (
+      !current ||
+      !this.session ||
+      !this.opened ||
+      (!allowDuringApply && this.applyLeaseActionId !== undefined) ||
+      current.revision !== this.latestSnapshot?.revision
+    ) {
+      return;
+    }
+    await this.send({
+      type: "updateAttention",
+      revision: current.revision,
+      attention: current.attention,
+    });
+  }
+
+  private async sendPendingCheck(allowDuringApply = false): Promise<void> {
     const pending = this.pendingCheck;
     if (
       !pending ||
       pending.commandId !== undefined ||
       !this.session ||
+      (!allowDuringApply && this.applyLeaseActionId !== undefined) ||
       pending.revision !== this.latestSnapshot?.revision
     ) {
       return;
@@ -1447,16 +1515,29 @@ class IntegrationRun {
         await this.restartHostObservation();
       }
     } finally {
-      this.applyLeaseActionId = undefined;
       const queued = this.queuedSnapshotDuringApply;
       this.queuedSnapshotDuringApply = undefined;
-      if (
-        this.session &&
-        queued &&
-        queued.revision !== outcomeSnapshot?.revision &&
-        queued.revision === this.latestSnapshot?.revision
-      ) {
-        await this.send({ type: "replaceDocument", snapshot: queued });
+      const attentionAtFlush = this.latestAttention;
+      const checkAtFlush = this.pendingCheck;
+      try {
+        if (
+          this.session &&
+          queued &&
+          queued.revision !== outcomeSnapshot?.revision &&
+          queued.revision === this.latestSnapshot?.revision
+        ) {
+          await this.send({ type: "replaceDocument", snapshot: queued });
+        }
+        await this.sendLatestAttention(true);
+        await this.sendPendingCheck(true);
+      } finally {
+        this.applyLeaseActionId = undefined;
+      }
+      if (this.latestAttention !== attentionAtFlush) {
+        await this.sendLatestAttention();
+      }
+      if (this.pendingCheck !== checkAtFlush) {
+        await this.sendPendingCheck();
       }
     }
   }
@@ -1672,6 +1753,9 @@ class IntegrationRun {
 
   private advanceAuthoritativeSnapshot(snapshot: DocumentSnapshot): void {
     this.latestSnapshot = snapshot;
+    if (this.latestAttention?.revision !== snapshot.revision) {
+      this.latestAttention = undefined;
+    }
     this.presentationValidationCache = {
       documentRevision: snapshot.revision,
       boundariesBySource: new Map(),
@@ -2012,6 +2096,23 @@ function coalesceQueuedPresentation(
     return undefined;
   }
   return next;
+}
+
+function coalesceQueuedHostObservation(
+  previous: HostObservation,
+  next: HostObservation,
+): HostObservation | undefined {
+  if (previous.type === "snapshot" && next.type === "snapshot") {
+    return next;
+  }
+  if (
+    previous.type === "attentionChanged" &&
+    next.type === "attentionChanged" &&
+    previous.revision === next.revision
+  ) {
+    return next;
+  }
+  return undefined;
 }
 
 function actionOutcomeForRejection(reason: ActionRejectionReason): ActionOutcome {

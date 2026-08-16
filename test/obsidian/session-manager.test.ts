@@ -66,7 +66,7 @@ describe("ObsidianSessionManager", () => {
 
     manager.activate(view, firstDocument);
     await vi.waitFor(() => expect(integration.runs).toHaveLength(1));
-    await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
+    await vi.waitFor(() => expect(integration.observations).toHaveLength(2));
     const firstRun = integration.runs[0];
     const firstObservation = integration.observations[0];
     if (firstObservation?.type !== "snapshot") {
@@ -113,7 +113,7 @@ describe("ObsidianSessionManager", () => {
     const manager = new ObsidianSessionManager({ integration });
     const view = createView("check this note");
     manager.activate(view, view);
-    await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
+    await vi.waitFor(() => expect(integration.observations).toHaveLength(2));
 
     manager.requestCheck(view, view);
 
@@ -152,7 +152,7 @@ describe("ObsidianSessionManager", () => {
     });
     const view = createView("draft");
     manager.activate(view, view);
-    await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
+    await vi.waitFor(() => expect(integration.observations).toHaveLength(2));
     const observation = integration.observations[0];
     if (observation?.type !== "snapshot") {
       throw new Error("expected an initial snapshot");
@@ -184,7 +184,7 @@ describe("ObsidianSessionManager", () => {
       onStateChange: (state) => states.push(state),
     });
     manager.activate(first, first);
-    await vi.waitFor(() => expect(integration.observations).toHaveLength(1));
+    await vi.waitFor(() => expect(integration.observations).toHaveLength(2));
     const observation = integration.observations[0];
     if (observation?.type !== "snapshot") {
       throw new Error("expected an initial snapshot");

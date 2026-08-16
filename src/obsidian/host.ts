@@ -1,5 +1,6 @@
+import { foldedRanges } from "@codemirror/language";
 import { Compartment, StateEffect } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorView, type ViewUpdate } from "@codemirror/view";
 
 import type {
   CheckIntent,
@@ -12,6 +13,7 @@ import type {
   HostRevisionValidation,
   PresentationSnapshot,
   SuggestionActions,
+  UTF16Range,
 } from "../integration/types";
 import { AsyncQueue } from "../shared/async-queue";
 import { graphemeBoundaries } from "../shared/grapheme-boundaries";
@@ -36,6 +38,11 @@ interface HostViewBridge {
   owner: ObsidianWritingHost | undefined;
 }
 
+type AttentionObservation = Extract<
+  HostObservation,
+  { readonly type: "attentionChanged" }
+>;
+
 const hostViewBridges = new WeakMap<EditorView, HostViewBridge>();
 
 export class ObsidianWritingHost {
@@ -46,6 +53,8 @@ export class ObsidianWritingHost {
   private incarnation = 0;
   private currentText: string;
   private observations: AsyncQueue<HostObservation> | undefined;
+  private lastAttention: AttentionObservation | undefined;
+  private attentionSuspendedForFocusLoss = false;
   private readonly pendingRequests: HostObservation[] = [];
   private closed = false;
 
@@ -94,13 +103,23 @@ export class ObsidianWritingHost {
       throw new Error("ObsidianWritingHost supports one observer at a time");
     }
 
-    const queue = new AsyncQueue<HostObservation>(128, (previous, next) =>
-      previous.type === "snapshot" && next.type === "snapshot" ? next : undefined,
-    );
+    const queue = new AsyncQueue<HostObservation>(128, (previous, next) => {
+      if (previous.type === "snapshot" && next.type === "snapshot") {
+        return next;
+      }
+      return previous.type === "attentionChanged" &&
+        next.type === "attentionChanged" &&
+        previous.revision === next.revision
+        ? next
+        : undefined;
+    });
     this.observations = queue;
     const abort = (): void => queue.close();
     signal.addEventListener("abort", abort, { once: true });
     queue.push(this.snapshotObservation());
+    const attention = this.attentionObservation();
+    this.lastAttention = attention;
+    queue.push(attention);
     for (const request of this.pendingRequests.splice(0)) {
       queue.push(request);
     }
@@ -239,11 +258,40 @@ export class ObsidianWritingHost {
     return [
       refinePresentationExtension(this.view.dom.ownerDocument),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
-          bridge.owner?.documentChanged();
-        }
+        bridge.owner?.viewUpdated(update);
       }),
     ];
+  }
+
+  private viewUpdated(update: ViewUpdate): void {
+    if (this.closed || this.bridge.owner !== this) {
+      return;
+    }
+    if (update.docChanged) {
+      this.documentChanged();
+    }
+    if (update.focusChanged) {
+      this.attentionSuspendedForFocusLoss = !update.view.hasFocus;
+      if (update.view.hasFocus) {
+        this.emitAttention(true);
+      }
+      return;
+    }
+    if (!this.attentionSuspendedForFocusLoss) {
+      this.emitAttention(false);
+    }
+  }
+
+  private emitAttention(force: boolean): void {
+    if (!this.observations) {
+      return;
+    }
+    const observation = this.attentionObservation();
+    if (!force && sameAttentionObservation(this.lastAttention, observation)) {
+      return;
+    }
+    this.lastAttention = observation;
+    this.observations.push(observation);
   }
 
   private documentChanged(): void {
@@ -258,10 +306,30 @@ export class ObsidianWritingHost {
     return { type: "snapshot", snapshot: this.snapshot() };
   }
 
+  private attentionObservation(): AttentionObservation {
+    const selection = this.view.state.selection;
+    const caretOffset =
+      selection.ranges.length === 1 && selection.main.empty
+        ? selection.main.head
+        : undefined;
+    return {
+      type: "attentionChanged",
+      // `docChanged` refreshes the authoritative snapshot before the paired
+      // attention update. Caret and viewport churn must not stringify a large
+      // unchanged document just to recover its already-known revision.
+      revision: this.currentRevision(),
+      attention: {
+        sourceId: DOCUMENT_SOURCE_ID,
+        ...(caretOffset === undefined ? {} : { caretOffset }),
+        visibleRanges: attentionVisibleRanges(this.view),
+      },
+    };
+  }
+
   private snapshot(): DocumentSnapshot {
     this.refreshIncarnation();
     return {
-      revision: `${this.sessionId}:${this.incarnation}`,
+      revision: this.currentRevision(),
       sources: [
         {
           sourceId: DOCUMENT_SOURCE_ID,
@@ -270,6 +338,10 @@ export class ObsidianWritingHost {
         },
       ],
     };
+  }
+
+  private currentRevision(): string {
+    return `${this.sessionId}:${this.incarnation}`;
   }
 
   private validEdits(edits: readonly HostEdit[]): boolean {
@@ -317,4 +389,40 @@ export class ObsidianWritingHost {
     }
     return result;
   }
+}
+
+function attentionVisibleRanges(view: EditorView): readonly UTF16Range[] {
+  const folds = foldedRanges(view.state);
+  const visible: UTF16Range[] = [];
+  for (const range of view.visibleRanges) {
+    let cursor = range.from;
+    folds.between(range.from, range.to, (from, to) => {
+      if (from > cursor) {
+        visible.push({ location: cursor, length: from - cursor });
+      }
+      cursor = Math.max(cursor, to);
+    });
+    if (cursor < range.to) {
+      visible.push({ location: cursor, length: range.to - cursor });
+    }
+  }
+  return visible;
+}
+
+function sameAttentionObservation(
+  left: AttentionObservation | undefined,
+  right: AttentionObservation,
+): boolean {
+  if (
+    left?.revision !== right.revision ||
+    left.attention.sourceId !== right.attention.sourceId ||
+    left.attention.caretOffset !== right.attention.caretOffset ||
+    left.attention.visibleRanges.length !== right.attention.visibleRanges.length
+  ) {
+    return false;
+  }
+  return left.attention.visibleRanges.every((range, index) => {
+    const other = right.attention.visibleRanges[index];
+    return other?.location === range.location && other.length === range.length;
+  });
 }

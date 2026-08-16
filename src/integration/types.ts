@@ -12,8 +12,19 @@ export interface SourceSnapshot {
   readonly sourceSyntax: "plainText" | "markdownDocument" | "latexDocument";
 }
 
+export interface WritingAttention {
+  readonly sourceId: SourceID;
+  readonly caretOffset?: number;
+  readonly visibleRanges: readonly UTF16Range[];
+}
+
 export type HostObservation =
   | { readonly type: "snapshot"; readonly snapshot: DocumentSnapshot }
+  | {
+      readonly type: "attentionChanged";
+      readonly revision: DocumentRevision;
+      readonly attention: WritingAttention;
+    }
   | {
       readonly type: "checkRequested";
       readonly revision: DocumentRevision;
