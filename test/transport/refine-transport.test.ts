@@ -406,7 +406,7 @@ describe("Refine transport handshake", () => {
     expect(error).toMatchObject({ message: "Malformed handshake rejection" });
   });
 
-  it("keeps a legacy pre-welcome close as a generic connection failure", async () => {
+  it("treats a clean pre-welcome close as a recoverable connection failure", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => frames.close());
     const transport = new RefineTransport({
@@ -428,8 +428,148 @@ describe("Refine transport handshake", () => {
       .connect(new AbortController().signal)
       .catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(TransportProtocolError);
+    expect(error).toBeInstanceOf(EngineConnectionError);
     expect(error).not.toBeInstanceOf(IncompatibleProtocolError);
+    expect(error).toMatchObject({
+      message: "Refine closed the connection before welcome",
+      recoverability: "recoverable",
+    });
+  });
+
+  it.each([
+    ["hello send", true],
+    ["first response frame", false],
+  ] as const)(
+    "times out a stalled %s after five seconds and closes exactly once",
+    async (_stage, stallSend) => {
+      vi.useFakeTimers();
+      const frames = new AsyncQueue<unknown>();
+      let releaseSend: (() => void) | undefined;
+      const stalledSend = new Promise<void>((resolve) => {
+        releaseSend = resolve;
+      });
+      let markSendSettled: (() => void) | undefined;
+      const sendSettled = new Promise<void>((resolve) => {
+        markSendSettled = resolve;
+      });
+      const close = vi.fn(async () => {
+        releaseSend?.();
+        frames.close();
+      });
+      const send = vi.fn(async (): Promise<void> => {
+        if (stallSend) {
+          await stalledSend;
+        }
+        markSendSettled?.();
+      });
+      const connector: FrameConnector = {
+        connect: async () => ({
+          send,
+          receive: () => frames,
+          close,
+        }),
+      };
+      const transport = new RefineTransport({
+        client: { id: "test-client", version: "0.1.0", host: "test-host" },
+        connector,
+        endpointLocator: endpointLocator(),
+      });
+      const connecting = transport.connect(new AbortController().signal);
+      const failure = connecting.catch((error: unknown) => error);
+
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(send).toHaveBeenCalledOnce();
+
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(close).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(close).toHaveBeenCalledOnce();
+        await expect(failure).resolves.toMatchObject({
+          message: "Timed out waiting for Refine welcome",
+          recoverability: "recoverable",
+        });
+
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(close).toHaveBeenCalledOnce();
+      } finally {
+        releaseSend?.();
+        frames.close();
+        await sendSettled;
+        await vi.advanceTimersByTimeAsync(0);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("preserves the abort reason when clean EOF races cancellation", async () => {
+    const frames = new AsyncQueue<unknown>();
+    const close = vi.fn(async () => frames.close());
+    let markHelloSent: (() => void) | undefined;
+    const helloSent = new Promise<void>((resolve) => {
+      markHelloSent = resolve;
+    });
+    const connector: FrameConnector = {
+      connect: async () => ({
+        send: async () => markHelloSent?.(),
+        receive: () => frames,
+        close,
+      }),
+    };
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    });
+    const controller = new AbortController();
+    const reason = new DOMException("Run stopped", "AbortError");
+    const connecting = transport.connect(controller.signal);
+    const failure = connecting.catch((error: unknown) => error);
+    await helloSent;
+
+    frames.close();
+    controller.abort(reason);
+
+    await expect(failure).resolves.toBe(reason);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the abort reason when cancellation races the welcome deadline", async () => {
+    vi.useFakeTimers();
+    const frames = new AsyncQueue<unknown>();
+    const close = vi.fn(async () => frames.close());
+    const connector: FrameConnector = {
+      connect: async () => ({
+        send: async () => undefined,
+        receive: () => frames,
+        close,
+      }),
+    };
+    const transport = new RefineTransport({
+      client: { id: "test-client", version: "0.1.0", host: "test-host" },
+      connector,
+      endpointLocator: endpointLocator(),
+    });
+    const controller = new AbortController();
+    const reason = new DOMException("Run stopped", "AbortError");
+    setTimeout(() => controller.abort(reason), 5_000);
+    const connecting = transport.connect(controller.signal);
+    const failure = connecting.catch((error: unknown) => error);
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(failure).resolves.toBe(reason);
+      expect(close).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      frames.close();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
   });
 
   it("accepts a compatible welcome from a legacy same-major descriptor", async () => {

@@ -4,10 +4,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+import { EngineConnectionError } from "../../src/transport/engine-connection-error";
 import { FrameDecoder, encodeFrame } from "../../src/transport/frame-codec";
 import { UnixFrameConnector } from "../../src/transport/unix-frame-connection";
 
 describe("UnixFrameConnector", () => {
+  it("classifies an unavailable socket as a recoverable connection failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "refine-obsidian-test-"));
+    const socketPath = join(directory, "missing.sock");
+    try {
+      const error = await new UnixFrameConnector()
+        .connect(socketPath, new AbortController().signal)
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(EngineConnectionError);
+      expect(error).toMatchObject({
+        message: "Unable to connect to the Refine socket",
+        recoverability: "recoverable",
+      });
+      expect(error).toHaveProperty("cause");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("exchanges framed JSON over an AF_UNIX stream", async () => {
     const directory = await mkdtemp(join(tmpdir(), "refine-obsidian-test-"));
     const socketPath = join(directory, "integration.sock");

@@ -32,6 +32,8 @@ import {
   type WelcomeFrame,
 } from "./wire";
 
+const HANDSHAKE_TIMEOUT_MS = 5_000;
+
 export interface FrameConnection {
   send(value: unknown): Promise<void>;
   receive(signal: AbortSignal): AsyncIterable<unknown>;
@@ -146,10 +148,20 @@ export class RefineTransport {
     };
 
     try {
-      await connection.send(hello);
-      const first = await frames.next();
+      const first = await receiveHandshakeResponse(
+        connection,
+        frames,
+        hello,
+        signal,
+      );
       if (first.done) {
-        throw new TransportProtocolError("Refine closed the connection before welcome");
+        if (signal.aborted) {
+          throw abortReason(signal);
+        }
+        throw new EngineConnectionError(
+          "Refine closed the connection before welcome",
+          "recoverable",
+        );
       }
       const welcome = decodeHandshakeResponse(first.value);
       if (welcome.serverEpoch !== endpoint.serverEpoch) {
@@ -166,6 +178,67 @@ export class RefineTransport {
       throw error;
     }
   }
+}
+
+async function receiveHandshakeResponse(
+  connection: FrameConnection,
+  frames: AsyncIterator<unknown>,
+  hello: HelloFrame,
+  signal: AbortSignal,
+): Promise<IteratorResult<unknown>> {
+  if (signal.aborted) {
+    throw abortReason(signal);
+  }
+
+  let abort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abort = (): void => reject(abortReason(signal));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      abort();
+    }
+  });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      if (signal.aborted) {
+        reject(abortReason(signal));
+      } else {
+        reject(new EngineConnectionError(
+          "Timed out waiting for Refine welcome",
+          "recoverable",
+        ));
+      }
+    }, HANDSHAKE_TIMEOUT_MS);
+  });
+  const response = (async (): Promise<IteratorResult<unknown>> => {
+    await connection.send(hello);
+    const first = await frames.next();
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
+    return first;
+  })();
+
+  try {
+    return await Promise.race([response, aborted, timedOut]);
+  } catch (error) {
+    if (signal.aborted) {
+      throw abortReason(signal);
+    }
+    throw error;
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+    if (abort !== undefined) {
+      signal.removeEventListener("abort", abort);
+    }
+  }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 class Session implements RefineTransportSession {

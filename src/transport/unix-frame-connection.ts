@@ -1,6 +1,7 @@
 import { createConnection, type Socket } from "node:net";
 
 import { AsyncQueue } from "../shared/async-queue";
+import { EngineConnectionError } from "./engine-connection-error";
 import { FrameDecoder, encodeFrame } from "./frame-codec";
 import type { FrameConnection, FrameConnector } from "./refine-transport";
 
@@ -19,7 +20,11 @@ export class UnixFrameConnector implements FrameConnector {
       };
       const error = (cause: Error): void => {
         signal.removeEventListener("abort", abort);
-        reject(cause);
+        reject(new EngineConnectionError(
+          "Unable to connect to the Refine socket",
+          "recoverable",
+          { cause },
+        ));
       };
       signal.addEventListener("abort", abort, { once: true });
       socket.once("error", error);
@@ -28,6 +33,9 @@ export class UnixFrameConnector implements FrameConnector {
         signal.removeEventListener("abort", abort);
         resolve(connection);
       });
+      if (signal.aborted) {
+        abort();
+      }
     });
   }
 }
