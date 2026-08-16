@@ -3483,7 +3483,7 @@ class FakeEngine {
 function snapshot(revision: string, text: string): DocumentSnapshot {
   return {
     revision,
-    sources: [{ sourceId: "document", text, sourceSyntax: "mixed" }],
+    sources: [{ sourceId: "document", text, sourceSyntax: "plainText" }],
   };
 }
 

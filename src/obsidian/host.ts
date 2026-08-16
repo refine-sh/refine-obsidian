@@ -265,7 +265,7 @@ export class ObsidianWritingHost {
       sources: [
         {
           sourceId: DOCUMENT_SOURCE_ID,
-          sourceSyntax: "mixed",
+          sourceSyntax: "markdownDocument",
           text: this.currentText,
         },
       ],

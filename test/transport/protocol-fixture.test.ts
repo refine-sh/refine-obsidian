@@ -34,10 +34,21 @@ interface ProtocolFixture {
 describe("integration protocol V2 golden transcript", () => {
   it("is consumed without translation by the TypeScript transport", async () => {
     const fixture = await loadFixture();
+    expect(fixture.hello).toMatchObject({
+      protocol: { major: 2, minor: 5 },
+    });
+    expect(fixture.openDocument).toMatchObject({
+      command: {
+        type: "openDocument",
+        snapshot: {
+          sources: [{ sourceSyntax: "markdownDocument" }],
+        },
+      },
+    });
     expect(fixture.rejection).toEqual({
       type: "rejected",
       reason: "incompatibleProtocol",
-      protocol: { major: 2, minor: 4 },
+      protocol: { major: 2, minor: 5 },
     });
     expect(fixture.checkingPresentation).toMatchObject({
       event: {
@@ -116,7 +127,7 @@ describe("integration protocol V2 golden transcript", () => {
         launchToken: fixture.hello.launchToken,
         serverEpoch: fixture.welcome.serverEpoch,
         protocolMajor: 2,
-        protocolMinor: 4,
+        protocolMinor: 5,
         pid: 123,
       }),
     };

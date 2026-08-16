@@ -14,7 +14,7 @@ import type {
 import type { MAX_FRAME_BYTES } from "./frame-codec";
 
 export const PROTOCOL_MAJOR = 2 as const;
-export const PROTOCOL_MINOR = 4 as const;
+export const PROTOCOL_MINOR = 5 as const;
 
 export const SUGGESTION_ACTION_KEYS = [
   "tab",
@@ -42,7 +42,7 @@ export interface IntegrationClientIdentity {
 
 export interface HelloFrame {
   readonly type: "hello";
-  readonly protocol: { readonly major: 2; readonly minor: 4 };
+  readonly protocol: { readonly major: 2; readonly minor: 5 };
   readonly client: IntegrationClientIdentity;
   readonly frontend?: { readonly id: string };
   readonly hostCapabilities: {
@@ -55,7 +55,7 @@ export interface HelloFrame {
 
 export interface WelcomeFrame {
   readonly type: "welcome";
-  readonly protocol: { readonly major: 2; readonly minor: 4 };
+  readonly protocol: { readonly major: 2; readonly minor: 5 };
   readonly serverEpoch: string;
   readonly runResumed: boolean;
   readonly limits: {

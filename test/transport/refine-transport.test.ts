@@ -24,7 +24,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, sent, () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 4 },
+        protocol: { major: 2, minor: 5 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -43,7 +43,7 @@ describe("Refine transport handshake", () => {
     });
     expect(sent[0]).toEqual({
       type: "hello",
-      protocol: { major: 2, minor: 4 },
+      protocol: { major: 2, minor: 5 },
       client: { id: "test-client", version: "0.1.0", host: "test-host" },
       hostCapabilities: {
         interceptableSuggestionActionKeys: [
@@ -78,7 +78,7 @@ describe("Refine transport handshake", () => {
           {
             sourceId: "document",
             text: "create an link",
-            sourceSyntax: "mixed",
+            sourceSyntax: "plainText",
           },
         ],
       },
@@ -97,7 +97,7 @@ describe("Refine transport handshake", () => {
             {
               sourceId: "document",
               text: "create an link",
-              sourceSyntax: "mixed",
+              sourceSyntax: "plainText",
             },
           ],
         },
@@ -276,7 +276,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 4 },
+        protocol: { major: 2, minor: 5 },
         serverEpoch: "epoch-2",
         runResumed: false,
         limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -295,8 +295,8 @@ describe("Refine transport handshake", () => {
   });
 
   it.each([
-    [{ major: 2, minor: 3 }, "server"],
-    [{ major: 2, minor: 5 }, "client"],
+    [{ major: 2, minor: 4 }, "server"],
+    [{ major: 2, minor: 6 }, "client"],
   ] as const)(
     "reports which component must be updated for welcome protocol %s",
     async (protocol, requiredUpdate) => {
@@ -354,8 +354,8 @@ describe("Refine transport handshake", () => {
   });
 
   it.each([
-    [{ major: 2, minor: 3 }, "server"],
-    [{ major: 2, minor: 5 }, "client"],
+    [{ major: 2, minor: 4 }, "server"],
+    [{ major: 2, minor: 6 }, "client"],
   ] as const)(
     "reports which component must be updated for a rejected protocol %s",
     async (protocol, requiredUpdate) => {
@@ -562,7 +562,7 @@ describe("Refine transport handshake", () => {
 
     frames.push({
       type: "welcome",
-      protocol: { major: 2, minor: 4 },
+      protocol: { major: 2, minor: 5 },
       serverEpoch: "epoch-1",
       runResumed: false,
       limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -616,7 +616,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 4 },
+        protocol: { major: 2, minor: 5 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -680,7 +680,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 4 },
+        protocol: { major: 2, minor: 5 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -849,12 +849,12 @@ describe("Refine transport handshake", () => {
     await fixture.session.close();
   });
 
-  it("decodes Protocol 2.4 unavailable reasons and rejects unknown ones", async () => {
+  it("decodes Protocol 2.5 unavailable reasons and rejects unknown ones", async () => {
     const frames = new AsyncQueue<unknown>();
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 4 },
+        protocol: { major: 2, minor: 5 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -1026,7 +1026,7 @@ describe("Refine transport handshake", () => {
             sent.push(value);
             frames.push({
               type: "welcome",
-              protocol: { major: 2, minor: 4 },
+              protocol: { major: 2, minor: 5 },
               serverEpoch: "epoch-1",
               runResumed: false,
               limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -1055,14 +1055,14 @@ describe("Refine transport handshake", () => {
       type: "openDocument",
       snapshot: {
         revision: "doc:0",
-        sources: [{ sourceId: "document", text: "first", sourceSyntax: "mixed" }],
+        sources: [{ sourceId: "document", text: "first", sourceSyntax: "plainText" }],
       },
     });
     const second = session.send({
       type: "replaceDocument",
       snapshot: {
         revision: "doc:1",
-        sources: [{ sourceId: "document", text: "second", sourceSyntax: "mixed" }],
+        sources: [{ sourceId: "document", text: "second", sourceSyntax: "plainText" }],
       },
     });
     await vi.waitFor(() => expect(releaseFirstCommand).toBeTypeOf("function"));
@@ -1085,7 +1085,7 @@ describe("Refine transport handshake", () => {
     const connector = connectionConnector(frames, [], () => {
       frames.push({
         type: "welcome",
-        protocol: { major: 2, minor: 4 },
+        protocol: { major: 2, minor: 5 },
         serverEpoch: "epoch-1",
         runResumed: false,
         limits: { maxFrameBytes: 8_388_608, maxSources: 2 },
@@ -1122,7 +1122,7 @@ function endpointLocator(): EndpointLocator {
       launchToken: "secret-1",
       serverEpoch: "epoch-1",
       protocolMajor: 2,
-      protocolMinor: 4,
+      protocolMinor: 5,
       pid: 123,
     }),
   };
@@ -1156,7 +1156,7 @@ async function connectedEventFixture() {
   const connector = connectionConnector(frames, [], () => {
     frames.push({
       type: "welcome",
-      protocol: { major: 2, minor: 4 },
+      protocol: { major: 2, minor: 5 },
       serverEpoch: "epoch-1",
       runResumed: false,
       limits: { maxFrameBytes: 8_388_608, maxSources: 2 },

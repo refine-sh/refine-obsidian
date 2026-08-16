@@ -95,7 +95,7 @@ describe("ObsidianSessionManager", () => {
           sources: [
             {
               sourceId: "document",
-              sourceSyntax: "mixed",
+              sourceSyntax: "markdownDocument",
               text: "first note",
             },
           ],
