@@ -1,10 +1,13 @@
 <p align="center">
   <a href="https://refine.sh/">
-    <img src="https://refine.sh/icon.png" alt="Refine" width="96" height="96">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://refine.sh/icon-dark.png">
+      <img src="https://refine.sh/icon.png" width="128" alt="Refine icon">
+    </picture>
   </a>
 </p>
 
-<h1 align="center">Refine for Obsidian — Local AI Grammar Checker</h1>
+<h1 align="center">Refine for Obsidian: Local AI Grammar Checker</h1>
 
 <p align="center">
   <strong>A private, offline AI grammar checker and writing assistant for Obsidian on Mac.</strong>
@@ -16,30 +19,20 @@
   <a href="https://refine.sh/"><strong>Download Refine for Mac</strong></a>
 </p>
 
-Refine checks grammar, spelling, and fluency directly in your Obsidian Markdown
-notes. Context-aware suggestions and explanations appear in the editor, and
-only the changes you accept are applied. Choose a downloaded local AI model to
-keep writing checks on your Mac and work offline.
+Refine is an AI grammar checker powered by a local language model, so it can run
+entirely offline. This plugin brings its contextual grammar, spelling, and
+fluency suggestions to Obsidian, helping you improve your notes without leaving
+your editor.
+
+Features:
+
+- Private, offline checks powered by a local LLM on your device
+- Inline highlights and suggestion cards for reviewing changes in context
+- Clear explanations of why each change is suggested
 
 <!-- Demo GIF: replace this comment with:
 ![Refine grammar checker for Obsidian showing an inline suggestion, explanation, and accepted correction](assets/refine-obsidian-demo.gif)
 -->
-
-## Why use Refine with Obsidian?
-
-- **Write without leaving your note.** Grammar and fluency suggestions appear
-  inline in Editing view, including Live Preview.
-- **Understand every correction.** Open a suggestion card to see the proposed
-  change, its language and model, or ask Refine for an explanation when that
-  action is available.
-- **Keep writing private and offline.** With a downloaded local model, the text
-  used for a check and the model's response stay on your Mac.
-- **Protect your Markdown.** Refine validates the current note and expected text
-  before applying an accepted change in a single editor transaction.
-- **Write in your language.** Refine supports
-  [50+ languages and regional variants](https://refine.sh/features).
-- **Use the same assistant across macOS.** Refine also works in other Mac apps,
-  so your writing preferences are not limited to Obsidian.
 
 ## Requirements
 
@@ -64,8 +57,8 @@ required. See the current options on the [Refine website](https://refine.sh/#pri
 ## Check a note
 
 Open a Markdown note in Editing view. With **Check Writing Automatically**
-enabled—the default in Refine—the active note is checked after you pause typing
-briefly.
+enabled (the default in Refine), the active note is checked after you pause
+typing briefly.
 
 1. Hover over highlighted text to open its suggestion card.
 2. Review the change and inspect the language and model used for the check. If
