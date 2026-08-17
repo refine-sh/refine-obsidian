@@ -350,14 +350,12 @@ describe("Refine status bar", () => {
       null,
     ],
     [
-      { type: "incompatible", requiredUpdate: "server" } as const,
-      "Refine: Update the Refine app to continue. Open Refine menu",
-      REFINE_MENU_BAR_ICON_ID,
-      null,
-    ],
-    [
-      { type: "incompatible", requiredUpdate: "client" } as const,
-      "Refine: Update the Refine Obsidian plugin to continue. Open Refine menu",
+      {
+        type: "incompatible",
+        clientProtocol: { major: 1, minor: 0 },
+        serverProtocol: { major: 2, minor: 0 },
+      } as const,
+      "Refine: Protocol 1.0 required; app reports 2.0. Open Refine menu",
       REFINE_MENU_BAR_ICON_ID,
       null,
     ],
@@ -440,17 +438,14 @@ describe("Refine status bar", () => {
       {
         type: "failed",
         reason: "incompatibleProtocol",
-        requiredUpdate: "server",
+        clientProtocol: { major: 1, minor: 0 },
+        serverProtocol: { major: 0, minor: 9 },
       } as const,
-      { type: "incompatible", requiredUpdate: "server" } as const,
-    ],
-    [
       {
-        type: "failed",
-        reason: "incompatibleProtocol",
-        requiredUpdate: "client",
+        type: "incompatible",
+        clientProtocol: { major: 1, minor: 0 },
+        serverProtocol: { major: 0, minor: 9 },
       } as const,
-      { type: "incompatible", requiredUpdate: "client" } as const,
     ],
     [
       presented({ type: "pending" }, 0, false),

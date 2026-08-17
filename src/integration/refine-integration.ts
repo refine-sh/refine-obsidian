@@ -1,9 +1,10 @@
 import { isFatalEngineConnectionError } from "../transport/engine-connection-error";
 import { AsyncQueue } from "../shared/async-queue";
-import { graphemeBoundaries } from "../shared/grapheme-boundaries";
-import type {
-  CommandReceipt,
-  RefineTransportSession,
+import { unicodeScalarBoundaries } from "../shared/unicode-scalar-boundaries";
+import {
+  HandshakeRejectedError,
+  type CommandReceipt,
+  type RefineTransportSession,
 } from "../transport/refine-transport";
 import type {
   ActionRejectionReason,
@@ -158,7 +159,7 @@ const MAX_BUFFERED_ENGINE_EVENTS = 128;
 const MAX_BUFFERED_HOST_OBSERVATIONS = 128;
 
 class IntegrationRun {
-  private readonly runId = globalThis.crypto.randomUUID();
+  private runId = globalThis.crypto.randomUUID();
   private readonly lifecycle = new AbortController();
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly actionByKey = new Map<string, Promise<ActionOutcome>>();
@@ -276,20 +277,7 @@ class IntegrationRun {
             this.serverEpoch !== undefined &&
             (this.serverEpoch !== connected.serverEpoch || !connected.runResumed)
           ) {
-            await this.abandonUnacknowledgedReceipts();
-            this.checkPresentationLifecycles.clear();
-            this.currentCheckIdByRevision.clear();
-            this.activeCheckingCheckIdByRevision.clear();
-            this.resumableCheckByRevision.clear();
-            this.checkIdAliases.clear();
-            this.actionPresentationAliasesByCommandId.clear();
-            this.actionAliasCommandIdByActionId.clear();
-            this.presentationReplayAlias = undefined;
-            this.currentCheckId = undefined;
-            this.currentCheckLineageId = undefined;
-            if (this.pendingCheck) {
-              delete this.pendingCheck.checkId;
-            }
+            await this.abandonLostCoordinatorState();
           }
           this.serverEpoch = connected.serverEpoch;
           this.session = connected;
@@ -299,7 +287,14 @@ class IntegrationRun {
           await this.openLatestSnapshot();
           await this.pumpEvents(connected);
         } catch (error) {
-          if (isFatalConnectionError(error)) {
+          if (
+            error instanceof HandshakeRejectedError &&
+            error.recovery === "newRun"
+          ) {
+            this.runId = globalThis.crypto.randomUUID();
+            this.serverEpoch = undefined;
+            await this.abandonLostCoordinatorState();
+          } else if (isFatalConnectionError(error)) {
             failure ??= error;
             this.lifecycle.abort(error);
           }
@@ -1709,6 +1704,23 @@ class IntegrationRun {
     this.transactionByAction.clear();
   }
 
+  private async abandonLostCoordinatorState(): Promise<void> {
+    await this.abandonUnacknowledgedReceipts();
+    this.checkPresentationLifecycles.clear();
+    this.currentCheckIdByRevision.clear();
+    this.activeCheckingCheckIdByRevision.clear();
+    this.resumableCheckByRevision.clear();
+    this.checkIdAliases.clear();
+    this.actionPresentationAliasesByCommandId.clear();
+    this.actionAliasCommandIdByActionId.clear();
+    this.presentationReplayAlias = undefined;
+    this.currentCheckId = undefined;
+    this.currentCheckLineageId = undefined;
+    if (this.pendingCheck) {
+      delete this.pendingCheck.checkId;
+    }
+  }
+
   private invalidateActions(
     outcome: ActionOutcome,
     keep: (pending: PendingAction) => boolean = () => false,
@@ -2388,7 +2400,7 @@ function validatePresentationContent(
     }
     let boundaries = boundariesBySource.get(suggestion.sourceId);
     if (!boundaries) {
-      boundaries = graphemeBoundaries(text);
+      boundaries = unicodeScalarBoundaries(text);
       boundariesBySource.set(suggestion.sourceId, boundaries);
     }
     const activationEnd =

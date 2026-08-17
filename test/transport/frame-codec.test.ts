@@ -30,6 +30,10 @@ describe("length-prefixed JSON frames", () => {
     expect(frame.readUInt32BE(0)).toBeLessThanOrEqual(MAX_FRAME_BYTES);
   });
 
+  it("rejects an outbound frame whose JSON root is not an object", () => {
+    expect(() => encodeFrame([])).toThrow(FrameProtocolError);
+  });
+
   it("rejects a declared frame larger than eight MiB before buffering its body", () => {
     const header = Buffer.alloc(4);
     header.writeUInt32BE(MAX_FRAME_BYTES + 1);
@@ -50,6 +54,21 @@ describe("length-prefixed JSON frames", () => {
     );
   });
 
+  it("preserves complete preceding frames when a coalesced later frame is invalid", () => {
+    const valid = encodeFrame({ type: "welcome" });
+    const invalid = rawFrame('{"type":"event","type":"event"}');
+
+    try {
+      new FrameDecoder().push(Buffer.concat([valid, invalid]));
+      expect.unreachable("expected a frame protocol error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(FrameProtocolError);
+      expect((error as FrameProtocolError).decodedFrames).toEqual([
+        { type: "welcome" },
+      ]);
+    }
+  });
+
   it("rejects JSON containing invalid UTF-8", () => {
     const body = Buffer.from([0x22, 0xc3, 0x28, 0x22]);
     const frame = Buffer.alloc(4 + body.length);
@@ -58,4 +77,63 @@ describe("length-prefixed JSON frames", () => {
 
     expect(() => new FrameDecoder().push(frame)).toThrow(FrameProtocolError);
   });
+
+  it("rejects duplicate object members at any depth", () => {
+    const frame = rawFrame('{"type":"welcome","limits":{"maxSources":2,"maxSources":2}}');
+
+    expect(() => new FrameDecoder().push(frame)).toThrow(FrameProtocolError);
+  });
+
+  it.each([
+    '{"value":null}',
+    '{"unknown":{"future":null}}',
+    '{"unknown":[1,null]}',
+  ])("rejects JSON null before semantic member handling: %s", (json) => {
+    expect(() => new FrameDecoder().push(rawFrame(json))).toThrow(
+      FrameProtocolError,
+    );
+  });
+
+  it("rejects outbound JSON containing null", () => {
+    expect(() => encodeFrame({ unknown: null })).toThrow(FrameProtocolError);
+  });
+
+  it.each([
+    '{"unknown":-1}',
+    '{"unknown":1.5}',
+    '{"unknown":1e0}',
+    '{"unknown":9007199254740992}',
+  ])("rejects nonportable numeric tokens under unknown members: %s", (json) => {
+    expect(() => new FrameDecoder().push(rawFrame(json))).toThrow(
+      FrameProtocolError,
+    );
+  });
+
+  it("rejects a non-object JSON root", () => {
+    expect(() => new FrameDecoder().push(rawFrame("[]"))).toThrow(FrameProtocolError);
+  });
+
+  it("rejects an unpaired surrogate escape", () => {
+    const frame = rawFrame('{"value":"\\uD800"}');
+
+    expect(() => new FrameDecoder().push(frame)).toThrow(FrameProtocolError);
+  });
+
+  it("rejects an outbound string containing an unpaired surrogate", () => {
+    expect(() => encodeFrame({ value: "\uD800" })).toThrow(FrameProtocolError);
+  });
+
+  it("decodes a paired surrogate escape as one Unicode scalar", () => {
+    const frame = rawFrame('{"value":"\\uD83D\\uDE80"}');
+
+    expect(new FrameDecoder().push(frame)).toEqual([{ value: "🚀" }]);
+  });
 });
+
+function rawFrame(json: string): Buffer {
+  const body = Buffer.from(json, "utf8");
+  const frame = Buffer.alloc(4 + body.length);
+  frame.writeUInt32BE(body.length);
+  body.copy(frame, 4);
+  return frame;
+}

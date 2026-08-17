@@ -16,7 +16,7 @@ import type {
   UTF16Range,
 } from "../integration/types";
 import { AsyncQueue } from "../shared/async-queue";
-import { graphemeBoundaries } from "../shared/grapheme-boundaries";
+import { unicodeScalarBoundaries } from "../shared/unicode-scalar-boundaries";
 import {
   clearLivePresentationPreservingProvisional,
   clearPresentation,
@@ -349,7 +349,7 @@ export class ObsidianWritingHost {
       return false;
     }
 
-    const boundaries = graphemeBoundaries(this.currentText);
+    const boundaries = unicodeScalarBoundaries(this.currentText);
     let nextHigherStart = Number.POSITIVE_INFINITY;
     for (const edit of edits) {
       const { location, length } = edit.range;

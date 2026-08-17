@@ -2,7 +2,7 @@ import { createConnection, type Socket } from "node:net";
 
 import { AsyncQueue } from "../shared/async-queue";
 import { EngineConnectionError } from "./engine-connection-error";
-import { FrameDecoder, encodeFrame } from "./frame-codec";
+import { FrameDecoder, FrameProtocolError, encodeFrame } from "./frame-codec";
 import type { FrameConnection, FrameConnector } from "./refine-transport";
 
 export class UnixFrameConnector implements FrameConnector {
@@ -52,6 +52,11 @@ class UnixFrameConnection implements FrameConnection {
           this.frames.push(frame);
         }
       } catch (error) {
+        if (error instanceof FrameProtocolError) {
+          for (const frame of error.decodedFrames) {
+            this.frames.push(frame);
+          }
+        }
         this.frames.fail(error);
         socket.destroy(error instanceof Error ? error : undefined);
       }

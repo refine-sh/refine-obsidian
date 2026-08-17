@@ -93,7 +93,10 @@ export default class RefinePlugin extends Plugin {
         console.error("Refine integration stopped");
         new Notice(
           error instanceof IncompatibleProtocolError
-            ? incompatibleProtocolNotice(error.requiredUpdate)
+            ? incompatibleProtocolNotice(
+                error.clientProtocol,
+                error.serverProtocol,
+              )
             : "Refine is unavailable. Make sure the Refine app is running.",
         );
       },

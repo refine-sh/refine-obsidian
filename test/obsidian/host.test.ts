@@ -429,7 +429,28 @@ describe("ObsidianWritingHost", () => {
     host.close();
   });
 
-  it("rejects an edit that splits a composed character", async () => {
+  it("applies an edit at a scalar boundary inside one displayed grapheme", async () => {
+    const view = createView("e\u0301");
+    const host = new ObsidianWritingHost(view, { sessionId: "scalar" });
+
+    const outcome = await host.apply({
+      expectedRevision: "scalar:0",
+      sourceId: "document",
+      edits: [
+        {
+          range: { location: 0, length: 1 },
+          expectedText: "e",
+          replacement: "a",
+        },
+      ],
+    });
+
+    expect(outcome).toMatchObject({ status: "applied" });
+    expect(view.state.doc.toString()).toBe("a\u0301");
+    host.close();
+  });
+
+  it("rejects an edit that splits a surrogate pair", async () => {
     const view = createView("A😀B");
     const host = new ObsidianWritingHost(view, { sessionId: "unicode" });
 

@@ -20,23 +20,24 @@ import type {
   PresentationInteraction,
 } from "../../src/integration/types";
 import { AsyncQueue } from "../../src/shared/async-queue";
-import { graphemeBoundaries } from "../../src/shared/grapheme-boundaries";
-import type {
-  CommandReceipt,
-  RefineTransportSession,
+import { unicodeScalarBoundaries } from "../../src/shared/unicode-scalar-boundaries";
+import {
+  HandshakeRejectedError,
+  type CommandReceipt,
+  type RefineTransportSession,
 } from "../../src/transport/refine-transport";
 import type {
   ClientCommand,
   ServerEventEnvelope,
 } from "../../src/transport/wire";
 
-vi.mock("../../src/shared/grapheme-boundaries", async (importOriginal) => {
+vi.mock("../../src/shared/unicode-scalar-boundaries", async (importOriginal) => {
   const original = await importOriginal<
-    typeof import("../../src/shared/grapheme-boundaries")
+    typeof import("../../src/shared/unicode-scalar-boundaries")
   >();
   return {
     ...original,
-    graphemeBoundaries: vi.fn(original.graphemeBoundaries),
+    unicodeScalarBoundaries: vi.fn(original.unicodeScalarBoundaries),
   };
 });
 
@@ -839,14 +840,14 @@ describe("RefineIntegration", () => {
     await run;
   });
 
-  it("reuses grapheme boundaries across progressive replacements and recomputes them for the next revision", async () => {
+  it("reuses scalar boundaries across progressive replacements and recomputes them for the next revision", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new FakeEngine();
     const integration = createRefineIntegration({ enginePort: engine });
     const controller = new AbortController();
     const run = integration.run({ host, signal: controller.signal });
     await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
-    const boundaries = vi.mocked(graphemeBoundaries);
+    const boundaries = vi.mocked(unicodeScalarBoundaries);
     boundaries.mockClear();
 
     engine.emit(progressivePresentation("boundary-cache", 1));
@@ -894,6 +895,38 @@ describe("RefineIntegration", () => {
     await run;
   });
 
+  it("accepts a scalar boundary inside one displayed grapheme", async () => {
+    const host = new FakeHost(snapshot("doc:0", "e\u0301"));
+    const engine = new FakeEngine();
+    const integration = createRefineIntegration({ enginePort: engine });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(engine.commands).toHaveLength(1));
+    const presentation = suggestionPresentation("scalar-boundary", "suggestion-1");
+
+    engine.emit({
+      ...presentation,
+      content: {
+        ...presentation.content,
+        suggestions: presentation.content.suggestions.map((suggestion) => ({
+          ...suggestion,
+          activationRange: { location: 1, length: 0 },
+          highlightRanges: [{ location: 0, length: 1 }],
+        })),
+      },
+    });
+
+    await Promise.race([
+      run,
+      vi.waitFor(() =>
+        expect(host.currentPresentation?.suggestions).toHaveLength(1),
+      ),
+    ]);
+    controller.abort();
+    host.observations.close();
+    await run;
+  });
+
   it.each([
     {
       name: "starts before the source",
@@ -904,7 +937,7 @@ describe("RefineIntegration", () => {
       activationRange: { location: 0, length: 5 },
     },
     {
-      name: "splits a grapheme",
+      name: "splits a surrogate pair",
       activationRange: { location: 2, length: 0 },
     },
     {
@@ -1331,7 +1364,7 @@ describe("RefineIntegration", () => {
       } else if (completedUnitCount === 128) {
         engine.emit({ type: "actionCompleted", actionId: "burst-action" });
       } else if (completedUnitCount === 192) {
-        engine.emit({ type: "fault", code: "diagnostic", fatal: false });
+        engine.emit({ type: "fault", code: "malformedMessage", fatal: false });
       }
     }
     await vi.waitFor(() => expect(engine.eventsRead).toBe(260));
@@ -2760,6 +2793,212 @@ describe("RefineIntegration", () => {
     await run;
   });
 
+  it("rotates the run ID after a runUnavailable/newRun rejection", async () => {
+    const host = new FakeHost(snapshot("doc:0", "first"));
+    const runIds: string[] = [];
+    const session = new FakeSession("epoch-1", false);
+    const enginePort = {
+      connect: async (
+        _signal: AbortSignal,
+        options?: { readonly runId: string },
+      ): Promise<RefineTransportSession> => {
+        if (!options) {
+          throw new Error("expected run ID");
+        }
+        runIds.push(options.runId);
+        if (runIds.length === 1) {
+          throw new HandshakeRejectedError(
+            "runUnavailable",
+            "newRun",
+            { major: 1, minor: 0 },
+          );
+        }
+        return session.transport;
+      },
+    };
+    const integration = createRefineIntegration({
+      enginePort,
+      reconnectDelayMs: 0,
+    });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+
+    await vi.waitFor(() => expect(session.commands).toHaveLength(1));
+    expect(runIds).toHaveLength(2);
+    expect(runIds[1]).not.toBe(runIds[0]);
+
+    controller.abort();
+    host.observations.close();
+    session.events.close();
+    await run;
+  });
+
+  it("drops stale Apply receipts when a rejection requires a new run", async () => {
+    const host = new FakeHost(snapshot("doc:0", "create an link"));
+    const runIds: string[] = [];
+    const firstSession = new FakeSession("epoch-1", false);
+    const replacementSession = new FakeSession("epoch-1", true);
+    let connections = 0;
+    const enginePort = {
+      connect: async (
+        _signal: AbortSignal,
+        options?: { readonly runId: string },
+      ): Promise<RefineTransportSession> => {
+        if (!options) {
+          throw new Error("expected run ID");
+        }
+        runIds.push(options.runId);
+        connections += 1;
+        if (connections === 1) {
+          return firstSession.transport;
+        }
+        if (connections === 2) {
+          throw new HandshakeRejectedError(
+            "runUnavailable",
+            "newRun",
+            { major: 1, minor: 0 },
+          );
+        }
+        return replacementSession.transport;
+      },
+    };
+    const integration = createRefineIntegration({
+      enginePort,
+      reconnectDelayMs: 0,
+    });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+    await vi.waitFor(() => expect(firstSession.commands).toHaveLength(1));
+
+    firstSession.events.push({
+      type: "event",
+      sequence: 1,
+      epoch: "epoch-1",
+      event: suggestionPresentation("check-1", "suggestion-1"),
+    });
+    await vi.waitFor(() =>
+      expect(host.currentPresentation?.suggestions).toHaveLength(1),
+    );
+    const apply = host.currentActions?.apply("suggestion-1");
+    if (!apply) {
+      throw new Error("expected Apply action");
+    }
+    await vi.waitFor(() =>
+      expect(firstSession.commands.at(-1)?.command.type).toBe("performAction"),
+    );
+    const perform = firstSession.commands.at(-1)?.command;
+    if (!perform || perform.type !== "performAction") {
+      throw new Error("expected performAction command");
+    }
+    firstSession.events.push({
+      type: "event",
+      sequence: 2,
+      epoch: "epoch-1",
+      event: {
+        type: "applyRequested",
+        actionId: perform.actionId,
+        transactionId: "transaction-1",
+        request: {
+          expectedRevision: "doc:0",
+          sourceId: "document",
+          edits: [
+            {
+              range: { location: 7, length: 2 },
+              expectedText: "an",
+              replacement: "a",
+            },
+          ],
+        },
+      },
+    });
+    await vi.waitFor(() =>
+      expect(firstSession.commands.at(-1)?.command.type).toBe("completeApply"),
+    );
+    firstSession.events.close();
+
+    await vi.waitFor(() => expect(replacementSession.commands).toHaveLength(1));
+    await expect(apply).resolves.toEqual({
+      status: "unavailable",
+      reason: "disconnected",
+    });
+    expect(host.apply).toHaveBeenCalledTimes(1);
+    expect(runIds).toHaveLength(3);
+    expect(runIds[1]).toBe(runIds[0]);
+    expect(runIds[2]).not.toBe(runIds[1]);
+    expect(
+      replacementSession.commands.map(({ command }) => command.type),
+    ).toEqual(["openDocument"]);
+
+    controller.abort();
+    host.observations.close();
+    replacementSession.events.close();
+    await run;
+  });
+
+  it("retries a retry rejection with the same run ID", async () => {
+    const host = new FakeHost(snapshot("doc:0", "first"));
+    const runIds: string[] = [];
+    const session = new FakeSession("epoch-1", false);
+    const enginePort = {
+      connect: async (
+        _signal: AbortSignal,
+        options?: { readonly runId: string },
+      ): Promise<RefineTransportSession> => {
+        if (!options) {
+          throw new Error("expected run ID");
+        }
+        runIds.push(options.runId);
+        if (runIds.length === 1) {
+          throw new HandshakeRejectedError(
+            "serverBusy",
+            "retry",
+            { major: 1, minor: 0 },
+          );
+        }
+        return session.transport;
+      },
+    };
+    const integration = createRefineIntegration({
+      enginePort,
+      reconnectDelayMs: 0,
+    });
+    const controller = new AbortController();
+    const run = integration.run({ host, signal: controller.signal });
+
+    await vi.waitFor(() => expect(session.commands).toHaveLength(1));
+    expect(runIds).toHaveLength(2);
+    expect(runIds[1]).toBe(runIds[0]);
+
+    controller.abort();
+    host.observations.close();
+    session.events.close();
+    await run;
+  });
+
+  it("stops after a none rejection instead of reconnecting", async () => {
+    const host = new FakeHost(snapshot("doc:0", "first"));
+    let connections = 0;
+    const rejection = new HandshakeRejectedError(
+      "invalidClient",
+      "none",
+      { major: 1, minor: 0 },
+    );
+    const integration = createRefineIntegration({
+      enginePort: {
+        connect: async (): Promise<RefineTransportSession> => {
+          connections += 1;
+          throw rejection;
+        },
+      },
+      reconnectDelayMs: 0,
+    });
+
+    await expect(
+      integration.run({ host, signal: new AbortController().signal }),
+    ).rejects.toBe(rejection);
+    expect(connections).toBe(1);
+  });
+
   it("reconnects with an Apply receipt, latest snapshot, attention, then pending check", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new ReconnectingEngine();
@@ -2966,6 +3205,19 @@ describe("RefineIntegration", () => {
     await vi.waitFor(() =>
       expect(engine.sessions[0]?.commands.at(-1)?.command.type).toBe("completeApply"),
     );
+    host.observations.push({
+      type: "attentionChanged",
+      revision: "doc:1",
+      attention: {
+        sourceId: "document",
+        caretOffset: 8,
+        visibleRanges: [{ location: 0, length: 23 }],
+      },
+    });
+    host.observations.push({ type: "checkRequested", revision: "doc:1" });
+    await vi.waitFor(() =>
+      expect(engine.sessions[0]?.commands.at(-1)?.command.type).toBe("requestCheck"),
+    );
     engine.sessions[0]?.events.close();
 
     await vi.waitFor(() => expect(engine.sessions).toHaveLength(2));
@@ -2973,6 +3225,8 @@ describe("RefineIntegration", () => {
     expect(host.apply).toHaveBeenCalledTimes(1);
     expect(engine.sessions[1]?.commands.map(({ command }) => command.type)).toEqual([
       "openDocument",
+      "updateAttention",
+      "requestCheck",
     ]);
 
     controller.abort();
@@ -4303,6 +4557,7 @@ class FakeSession {
     this.transport = {
       serverEpoch,
       runResumed,
+      activatedCapabilities: [],
       send: async (command, commandId): Promise<CommandReceipt> => {
         this.sequence += 1;
         const id = commandId ?? `command-${this.sequence}`;
@@ -4348,6 +4603,7 @@ class FakeEngine {
     return Promise.resolve({
       serverEpoch: "epoch-1",
       runResumed: false,
+      activatedCapabilities: [],
       send: async (command, commandId): Promise<CommandReceipt> => {
         this.commandSequence += 1;
         const id = commandId ?? `command-${this.commandSequence}`;

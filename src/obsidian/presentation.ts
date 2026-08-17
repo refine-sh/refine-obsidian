@@ -14,6 +14,7 @@ import {
   type ChangeDesc,
   type Extension,
   type Range,
+  type Text,
   type Transaction,
 } from "@codemirror/state";
 import {
@@ -33,6 +34,7 @@ import type {
   PresentationSnapshot,
   SuggestionActions,
 } from "../integration/types";
+import { graphemeBoundaries } from "../shared/grapheme-boundaries";
 import {
   disposeSuggestionCard,
   plainExplanationRenderer,
@@ -129,6 +131,7 @@ const suggestionHoverCloseDelayMs = 120;
 const suggestionHoverBridgeBufferPx = 6;
 const suggestionCardViewportGutterPx = 16;
 const suggestionCardGapPx = 4;
+const graphemeBoundaryCache = new WeakMap<Text, readonly number[]>();
 
 const replacePresentation = StateEffect.define<LivePresentationInput | undefined>();
 const clearLivePresentationEffect = StateEffect.define<null>();
@@ -140,7 +143,7 @@ const presentationField = StateField.define<PresentationState | undefined>({
     const documentTextChanged = transaction.docChanged &&
       !transaction.startState.doc.eq(transaction.newDoc);
     let next = documentTextChanged
-      ? provisionalPresentation(value, transaction.changes)
+      ? provisionalPresentation(value, transaction.changes, transaction.newDoc)
       : value;
     if (!documentTextChanged && transaction.selection !== undefined) {
       next = selectionUpdatedPresentation(next, transaction);
@@ -163,7 +166,7 @@ const presentationField = StateField.define<PresentationState | undefined>({
                   effect.value,
                   livePresentation(next),
                   transaction.newSelection,
-                  transaction.newDoc.length,
+                  transaction.newDoc,
                 );
       } else if (
         effect.is(clearLivePresentationEffect) &&
@@ -178,7 +181,7 @@ const presentationField = StateField.define<PresentationState | undefined>({
           next,
           undefined,
           false,
-          transaction.newDoc.length,
+          transaction.newDoc,
         );
       }
     }
@@ -192,7 +195,7 @@ function installedPresentation(
   input: LivePresentationInput,
   previous: InstalledPresentation | undefined,
   selection: EditorSelection,
-  documentLength: number,
+  document: Text,
 ): InstalledPresentation {
   const sameCheckGeneration =
     previous?.snapshot.documentRevision === input.snapshot.documentRevision &&
@@ -232,7 +235,7 @@ function installedPresentation(
     activeQuickApplySuggestionId: activeSuggestionId,
     canAutoActivateQuickApply: canAutoActivate,
     decorations: buildDecorations(
-      documentLength,
+      document,
       input.snapshot,
       activeSuggestionId,
     ),
@@ -254,7 +257,7 @@ function selectionUpdatedPresentation(
       presentation,
       undefined,
       false,
-      transaction.newDoc.length,
+      transaction.newDoc,
     );
   }
   const candidate = bestQuickApplySuggestion(
@@ -267,7 +270,7 @@ function selectionUpdatedPresentation(
     candidate === undefined &&
       transaction.newSelection.ranges.length === 1 &&
       transaction.newSelection.main.empty,
-    transaction.newDoc.length,
+    transaction.newDoc,
   );
 }
 
@@ -275,7 +278,7 @@ function presentationWithQuickApply(
   presentation: InstalledPresentation,
   activeSuggestionId: string | undefined,
   canAutoActivate: boolean,
-  documentLength: number,
+  document: Text,
 ): InstalledPresentation {
   if (
     presentation.activeQuickApplySuggestionId === activeSuggestionId &&
@@ -288,7 +291,7 @@ function presentationWithQuickApply(
     activeQuickApplySuggestionId: activeSuggestionId,
     canAutoActivateQuickApply: canAutoActivate,
     decorations: buildDecorations(
-      documentLength,
+      document,
       presentation.snapshot,
       activeSuggestionId,
     ),
@@ -350,6 +353,7 @@ function livePresentation(
 function provisionalPresentation(
   presentation: PresentationState | undefined,
   changes: ChangeDesc,
+  document: Text,
 ): ProvisionalPresentation | undefined {
   if (!presentation) {
     return undefined;
@@ -387,7 +391,7 @@ function provisionalPresentation(
   return {
     type: "provisional",
     suggestions,
-    decorations: buildProvisionalDecorations(changes.newLength, suggestions),
+    decorations: buildProvisionalDecorations(document, suggestions),
   };
 }
 
@@ -1888,7 +1892,7 @@ function suggestionKindRank(kind: PresentedSuggestion["kind"]): number {
 }
 
 function buildDecorations(
-  documentLength: number,
+  document: Text,
   snapshot: PresentationSnapshot,
   activeQuickApplySuggestionId?: string,
 ): DecorationSet {
@@ -1900,11 +1904,16 @@ function buildDecorations(
     for (const range of suggestion.highlightRanges) {
       const style = snapshot.appearance.highlight.style;
       const color = suggestionColor(snapshot.appearance, suggestion.kind);
-      const from = range.location;
-      const to = from + range.length;
-      if (from < 0 || to < from || to > documentLength) {
+      const originalFrom = range.location;
+      const originalTo = originalFrom + range.length;
+      if (originalFrom < 0 || originalTo < originalFrom || originalTo > document.length) {
         continue;
       }
+      const { from, to } = displayedGraphemeRange(
+        originalFrom,
+        originalTo,
+        range.length === 0 ? [] : displayGraphemeBoundaries(document),
+      );
       const isQuickApplyActive =
         suggestion.id === activeQuickApplySuggestionId;
       if (range.length === 0) {
@@ -1949,17 +1958,22 @@ function buildDecorations(
 }
 
 function buildProvisionalDecorations(
-  documentLength: number,
+  document: Text,
   suggestions: readonly ProvisionalSuggestion[],
 ): DecorationSet {
   const ranges: Range<Decoration>[] = [];
   for (const suggestion of suggestions) {
     for (const range of suggestion.highlightRanges) {
-      const from = range.location;
-      const to = from + range.length;
-      if (from < 0 || to < from || to > documentLength) {
+      const originalFrom = range.location;
+      const originalTo = originalFrom + range.length;
+      if (originalFrom < 0 || originalTo < originalFrom || originalTo > document.length) {
         continue;
       }
+      const { from, to } = displayedGraphemeRange(
+        originalFrom,
+        originalTo,
+        range.length === 0 ? [] : displayGraphemeBoundaries(document),
+      );
       if (range.length === 0) {
         ranges.push(
           Decoration.widget({
@@ -1990,6 +2004,52 @@ function buildProvisionalDecorations(
     }
   }
   return Decoration.set(ranges, true);
+}
+
+function displayGraphemeBoundaries(document: Text): readonly number[] {
+  const cached = graphemeBoundaryCache.get(document);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const boundaries = [...graphemeBoundaries(document.toString())].sort(
+    (left, right) => left - right,
+  );
+  graphemeBoundaryCache.set(document, boundaries);
+  return boundaries;
+}
+
+function displayedGraphemeRange(
+  from: number,
+  to: number,
+  boundaries: readonly number[],
+): { readonly from: number; readonly to: number } {
+  if (from === to) {
+    return { from, to };
+  }
+  const fromIndex = lowerBoundBoundaryIndex(boundaries, from);
+  const displayedFrom = boundaries[fromIndex] === from
+    ? from
+    : boundaries[fromIndex - 1] ?? 0;
+  const toIndex = lowerBoundBoundaryIndex(boundaries, to);
+  const displayedTo = boundaries[toIndex] ?? boundaries.at(-1) ?? to;
+  return { from: displayedFrom, to: displayedTo };
+}
+
+function lowerBoundBoundaryIndex(
+  boundaries: readonly number[],
+  target: number,
+): number {
+  let lower = 0;
+  let upper = boundaries.length;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    if ((boundaries[middle] ?? Number.POSITIVE_INFINITY) < target) {
+      lower = middle + 1;
+    } else {
+      upper = middle;
+    }
+  }
+  return lower;
 }
 
 function suggestionColor(

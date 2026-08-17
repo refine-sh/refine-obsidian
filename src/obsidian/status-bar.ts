@@ -1,5 +1,5 @@
 import type { CheckingProgress } from "../integration/types";
-import type { RequiredCompatibilityUpdate } from "../transport/refine-transport";
+import type { ProtocolVersion } from "../transport/refine-transport";
 import { incompatibleProtocolStatus } from "./compatibility";
 import { REFINE_MENU_BAR_ICON_ID } from "./icons";
 import type { ObsidianSessionState } from "./session-manager";
@@ -21,7 +21,8 @@ export type RefineStatusBarState = (
   | { readonly type: "checkFailed" }
   | {
       readonly type: "incompatible";
-      readonly requiredUpdate: RequiredCompatibilityUpdate;
+      readonly clientProtocol: ProtocolVersion;
+      readonly serverProtocol: ProtocolVersion;
     }
   | { readonly type: "error" }
 ) & { readonly automaticChecksEnabled?: boolean };
@@ -204,7 +205,7 @@ export function createRefineStatusBarController(
           element,
           renderIcon,
           "incompatible",
-          incompatibleProtocolStatus(state.requiredUpdate),
+          incompatibleProtocolStatus(state.clientProtocol, state.serverProtocol),
           REFINE_MENU_BAR_ICON_ID,
         );
       }
@@ -227,7 +228,11 @@ export function statusBarStateForSession(
   }
   if (session.type === "failed") {
     return session.reason === "incompatibleProtocol"
-      ? { type: "incompatible", requiredUpdate: session.requiredUpdate }
+      ? {
+          type: "incompatible",
+          clientProtocol: session.clientProtocol,
+          serverProtocol: session.serverProtocol,
+        }
       : { type: "error" };
   }
 

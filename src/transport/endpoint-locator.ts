@@ -2,6 +2,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
+import { isIntegerMember, parseJSONObject } from "./strict-json";
 import { PROTOCOL_MAJOR, PROTOCOL_MINOR } from "./wire";
 
 export interface EndpointDescriptor {
@@ -10,7 +11,7 @@ export interface EndpointDescriptor {
   readonly launchToken: string;
   readonly serverEpoch: string;
   readonly protocolMajor: typeof PROTOCOL_MAJOR;
-  readonly protocolMinor?: typeof PROTOCOL_MINOR;
+  readonly protocolMinor: typeof PROTOCOL_MINOR;
   readonly pid: number;
 }
 
@@ -66,12 +67,14 @@ export interface FileEndpointLocatorOptions {
 }
 
 const defaultFileSystem: EndpointFileSystem = {
-  readText: (path) => readFile(path, "utf8"),
+  readText: async (path) => new TextDecoder("utf-8", { fatal: true }).decode(
+    await readFile(path),
+  ),
   stat: async (path) => {
     const result = await lstat(path);
     return {
       uid: result.uid,
-      mode: result.mode & 0o777,
+      mode: result.mode & 0o7777,
       kind: result.isFile()
         ? "file"
         : result.isDirectory()
@@ -95,18 +98,34 @@ export function defaultEndpointDescriptorPath(homeDirectory = homedir()): string
 }
 
 export class FileEndpointLocator implements EndpointLocator {
-  private readonly currentUid: number;
+  private readonly currentUid: number | undefined;
   private readonly descriptorPath: string;
   private readonly fileSystem: EndpointFileSystem;
 
   constructor(options: FileEndpointLocatorOptions = {}) {
     const processUid = process.getuid?.();
-    this.currentUid = options.currentUid ?? processUid ?? -1;
+    this.currentUid = options.currentUid ?? processUid;
     this.descriptorPath = options.descriptorPath ?? defaultEndpointDescriptorPath();
     this.fileSystem = options.fileSystem ?? defaultFileSystem;
   }
 
   async locate(): Promise<EndpointDescriptor> {
+    const descriptorDirectory = dirname(this.descriptorPath);
+    const descriptorDirectoryStat = await this.fileSystem.stat(descriptorDirectory);
+    this.requirePrivateEntry(
+      descriptorDirectoryStat,
+      "directory",
+      0o700,
+      "endpoint directory",
+    );
+    const ownershipLockPath = join(descriptorDirectory, "owner.lock");
+    const ownershipLockStat = await this.fileSystem.stat(ownershipLockPath);
+    this.requirePrivateEntry(
+      ownershipLockStat,
+      "file",
+      0o600,
+      "ownership lock",
+    );
     const descriptorStat = await this.fileSystem.stat(this.descriptorPath);
     this.requirePrivateEntry(descriptorStat, "file", 0o600, "endpoint descriptor");
     const descriptor = parseEndpointDescriptor(await this.fileSystem.readText(this.descriptorPath));
@@ -125,7 +144,11 @@ export class FileEndpointLocator implements EndpointLocator {
     mode: number,
     label: string,
   ): void {
-    if (actual.kind !== kind || actual.uid !== this.currentUid || (actual.mode & 0o777) !== mode) {
+    if (
+      actual.kind !== kind ||
+      (this.currentUid !== undefined && actual.uid !== this.currentUid) ||
+      (actual.mode & 0o7777) !== mode
+    ) {
       throw new EndpointSecurityError(
         `${label} must be a same-user ${kind} with mode ${mode.toString(8)}`,
       );
@@ -134,48 +157,41 @@ export class FileEndpointLocator implements EndpointLocator {
 }
 
 export function parseEndpointDescriptor(text: string): EndpointDescriptor {
-  let value: unknown;
+  let value: Record<string, unknown>;
   try {
-    value = JSON.parse(text) as unknown;
+    value = parseJSONObject(text);
   } catch (error) {
     throw new EndpointDescriptorError("Endpoint descriptor is not valid JSON", { cause: error });
   }
-  if (!isRecord(value)) {
-    throw new EndpointDescriptorError("Endpoint descriptor must be a JSON object");
-  }
-  if (value.version !== 1) {
+  if (!isIntegerMember(value, "version", 1, 1)) {
     throw new EndpointDescriptorError("Endpoint descriptor version must be 1");
   }
   if (typeof value.socketPath !== "string" || !isAbsolute(value.socketPath)) {
     throw new EndpointDescriptorError("Endpoint socketPath must be an absolute path");
   }
-  if (typeof value.launchToken !== "string" || value.launchToken.length === 0) {
-    throw new EndpointDescriptorError("Endpoint launchToken must be a nonempty string");
+  if (typeof value.launchToken !== "string" || !/^[0-9A-F]{64}$/.test(value.launchToken)) {
+    throw new EndpointDescriptorError(
+      "Endpoint launchToken must contain exactly 64 uppercase hexadecimal characters",
+    );
   }
-  if (typeof value.serverEpoch !== "string" || value.serverEpoch.length === 0) {
-    throw new EndpointDescriptorError("Endpoint serverEpoch must be a nonempty string");
+  if (typeof value.serverEpoch !== "string" || !/^[\x21-\x7e]{1,128}$/.test(value.serverEpoch)) {
+    throw new EndpointDescriptorError(
+      "Endpoint serverEpoch must be a 1-to-128-byte visible ASCII identifier",
+    );
   }
-  const protocolMajor = requireProtocolComponent(
-    value.protocolMajor,
-    "protocolMajor",
-  );
-  // Existing protocol 2.x descriptors predate protocolMinor. Preserve that
-  // absence so the transport can negotiate with a compatible legacy server;
-  // without a typed response, a pre-welcome close remains a generic failure.
-  const protocolMinor = value.protocolMinor === undefined
-    ? undefined
-    : requireProtocolComponent(value.protocolMinor, "protocolMinor");
+  const protocolMajor = requireProtocolComponent(value, "protocolMajor");
+  const protocolMinor = requireProtocolComponent(value, "protocolMinor");
   if (
     protocolMajor !== PROTOCOL_MAJOR ||
-    (protocolMinor !== undefined && protocolMinor !== PROTOCOL_MINOR)
+    protocolMinor !== PROTOCOL_MINOR
   ) {
     throw new EndpointProtocolVersionError({
       major: protocolMajor,
-      minor: protocolMinor ?? 0,
+      minor: protocolMinor,
     });
   }
-  if (!Number.isSafeInteger(value.pid) || (value.pid as number) <= 0) {
-    throw new EndpointDescriptorError("Endpoint pid must be a positive integer");
+  if (!isIntegerMember(value, "pid", 1, 0x7fffffff)) {
+    throw new EndpointDescriptorError("Endpoint pid must be a positive 32-bit integer");
   }
 
   return {
@@ -184,22 +200,19 @@ export function parseEndpointDescriptor(text: string): EndpointDescriptor {
     launchToken: value.launchToken,
     serverEpoch: value.serverEpoch,
     protocolMajor: PROTOCOL_MAJOR,
-    ...(protocolMinor === undefined
-      ? {}
-      : { protocolMinor: PROTOCOL_MINOR }),
+    protocolMinor: PROTOCOL_MINOR,
     pid: value.pid as number,
   };
 }
 
-function requireProtocolComponent(value: unknown, field: string): number {
-  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > 0xffff) {
+function requireProtocolComponent(
+  object: Record<string, unknown>,
+  field: string,
+): number {
+  if (!isIntegerMember(object, field, 0, 0xffff)) {
     throw new EndpointDescriptorError(
       `Endpoint ${field} must be an unsigned 16-bit integer`,
     );
   }
-  return value as number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return object[field] as number;
 }

@@ -84,6 +84,46 @@ describe("Obsidian presentation", () => {
     expect(document.querySelectorAll(".refine-suggestion, .refine-insertion-anchor")).toHaveLength(0);
   });
 
+  it("expands a scalar-valid highlight to displayed grapheme boundaries", async () => {
+    const { host } = createHost("e\u0301", "grapheme-display");
+    const base = presentation("grapheme-display:0");
+    await host.present(
+      {
+        ...base,
+        suggestions: base.suggestions.slice(0, 1).map((suggestion) => ({
+          ...suggestion,
+          activationRange: { location: 0, length: 1 },
+          highlightRanges: [{ location: 0, length: 1 }],
+        })),
+      },
+      actions(),
+    );
+
+    expect(
+      document.querySelector<HTMLElement>(".refine-suggestion")?.textContent,
+    ).toBe("e\u0301");
+  });
+
+  it("does not segment a large document for empty lifecycle presentations", async () => {
+    const { host } = createHost("a".repeat(1_048_576), "large-empty");
+    const segment = vi.spyOn(Intl.Segmenter.prototype, "segment");
+    try {
+      await host.present(
+        lifecyclePresentation("large-empty:0", 1, { type: "pending" }),
+        actions(),
+      );
+      await host.present(
+        lifecyclePresentation("large-empty:0", 2, { type: "checking" }),
+        actions(),
+      );
+
+      expect(segment).not.toHaveBeenCalled();
+      expect(document.querySelector(".refine-suggestion")).toBeNull();
+    } finally {
+      segment.mockRestore();
+    }
+  });
+
   it("keeps only mapped unaffected suggestions as inert provisional decorations", async () => {
     const { host, view } = createHost(
       "bad first. bad second.",
@@ -1127,6 +1167,7 @@ describe("Obsidian presentation", () => {
       connect: async (): Promise<RefineTransportSession> => ({
         serverEpoch: "epoch-card",
         runResumed: false,
+        activatedCapabilities: [],
         send: async (command): Promise<CommandReceipt> => {
           commandSequence += 1;
           const id = `command-${commandSequence}`;
@@ -1237,6 +1278,7 @@ describe("Obsidian presentation", () => {
       connect: async (): Promise<RefineTransportSession> => ({
         serverEpoch: "epoch-quick-apply",
         runResumed: false,
+        activatedCapabilities: [],
         send: async (command): Promise<CommandReceipt> => {
           commandSequence += 1;
           const id = `quick-command-${commandSequence}`;
@@ -1414,6 +1456,7 @@ describe("Obsidian presentation", () => {
     const reportButton = [...document.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent === "Report");
 
+    expect(report).not.toHaveBeenCalled();
     reportButton?.click();
 
     await vi.waitFor(() => expect(report).toHaveBeenCalledWith("grammar-1"));

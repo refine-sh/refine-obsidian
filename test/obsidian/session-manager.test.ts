@@ -229,17 +229,17 @@ describe("ObsidianSessionManager", () => {
     manager.dispose();
   });
 
-  it.each(["server", "client"] as const)(
-    "reports an incompatible protocol failure requiring an update to %s",
-    async (requiredUpdate) => {
+  it.each([
+    { major: 0, minor: 9 },
+    { major: 2, minor: 0 },
+  ] as const)(
+    "reports the exact incompatible protocol versions for %s",
+    async (serverProtocol) => {
       const states: ObsidianSessionState[] = [];
       const manager = new ObsidianSessionManager({
         integration: {
           run: async () => {
-            throw new IncompatibleProtocolError(
-              "Refine protocol 1 is incompatible with protocol 2",
-              requiredUpdate,
-            );
+            throw new IncompatibleProtocolError(serverProtocol);
           },
         },
         onStateChange: (state) => states.push(state),
@@ -252,7 +252,8 @@ describe("ObsidianSessionManager", () => {
         expect(states.at(-1)).toEqual({
           type: "failed",
           reason: "incompatibleProtocol",
-          requiredUpdate,
+          clientProtocol: { major: 1, minor: 0 },
+          serverProtocol,
         }),
       );
       manager.dispose();

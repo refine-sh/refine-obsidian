@@ -1,11 +1,16 @@
 import { EngineConnectionError } from "./engine-connection-error";
+import { parseJSONObject } from "./strict-json";
 
 export const MAX_FRAME_BYTES = 8_388_608 as const;
 const HEADER_BYTES = 4;
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 export class FrameProtocolError extends EngineConnectionError {
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(
+    message: string,
+    options?: ErrorOptions,
+    readonly decodedFrames: readonly unknown[] = [],
+  ) {
     super(message, "fatal", options);
     this.name = "FrameProtocolError";
   }
@@ -14,9 +19,17 @@ export class FrameProtocolError extends EngineConnectionError {
 export function encodeFrame(value: unknown): Buffer {
   let body: Buffer;
   try {
-    body = Buffer.from(JSON.stringify(value), "utf8");
+    const json = JSON.stringify(value);
+    if (json === undefined) {
+      throw new TypeError("JSON serialization returned no value");
+    }
+    parseJSONObject(json);
+    body = Buffer.from(json, "utf8");
   } catch (error) {
     throw new FrameProtocolError("Frame value is not JSON serializable", { cause: error });
+  }
+  if (body[0] !== 0x7b) {
+    throw new FrameProtocolError("Frame JSON root must be an object");
   }
   if (body.length === 0 || body.length > MAX_FRAME_BYTES) {
     throw new FrameProtocolError(`Frame body must be between 1 and ${MAX_FRAME_BYTES} bytes`);
@@ -60,7 +73,7 @@ export class FrameDecoder {
         const body = this.buffered.subarray(HEADER_BYTES, HEADER_BYTES + length);
         let value: unknown;
         try {
-          value = JSON.parse(utf8Decoder.decode(body)) as unknown;
+          value = parseJSONObject(utf8Decoder.decode(body));
         } catch (error) {
           throw new FrameProtocolError("Frame body is not valid JSON", { cause: error });
         }
@@ -71,6 +84,13 @@ export class FrameDecoder {
     } catch (error) {
       this.failed = true;
       this.buffered = Buffer.alloc(0);
+      if (decoded.length > 0) {
+        throw new FrameProtocolError(
+          error instanceof Error ? error.message : "Invalid frame",
+          { cause: error },
+          decoded,
+        );
+      }
       throw error;
     }
   }

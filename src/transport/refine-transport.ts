@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  PresentationInteraction,
-  SuggestionActionKey,
-} from "../integration/types";
+import type { PresentationInteraction } from "../integration/types";
 
 import {
   EngineConnectionError,
@@ -16,15 +13,35 @@ import {
   type EndpointLocator,
 } from "./endpoint-locator";
 import { MAX_FRAME_BYTES } from "./frame-codec";
+import { isIntegerMember } from "./strict-json";
 import { UnixFrameConnector } from "./unix-frame-connection";
 import {
   PROTOCOL_MAJOR,
   PROTOCOL_MINOR,
+  MAX_CAPABILITIES,
+  MAX_SOURCE_BYTES,
   SUGGESTION_ACTION_KEYS,
+  isActionUnavailableReason,
   isActionRejectionReason,
+  isApplyRejectionReason,
+  isApplyUnsupportedReason,
+  isDiffRunKind,
+  isFaultSeverityPair,
+  isPresentationCoverage,
+  isPresentationStatus,
+  isPresentationUnavailableReason,
+  isQuickApplyActivationStyle,
+  isResyncReason,
+  isSourceSyntax,
+  isSuggestionActionKey,
+  isSuggestionActionKind,
+  isSuggestionHighlightStyle,
+  isSuggestionKind,
+  isTextDirection,
   type ClientCommand,
   type ClientCommandEnvelope,
   type HandshakeRejectedFrame,
+  type HandshakeRecovery,
   type HelloFrame,
   type IntegrationClientIdentity,
   type PresentationContent,
@@ -46,6 +63,9 @@ export interface FrameConnector {
 
 export interface RefineTransportOptions {
   readonly client: IntegrationClientIdentity;
+  readonly frontend?: HelloFrame["frontend"];
+  readonly hostCapabilities?: HelloFrame["hostCapabilities"];
+  readonly capabilities?: readonly string[];
   readonly endpointLocator?: EndpointLocator;
   readonly connector?: FrameConnector;
 }
@@ -58,6 +78,7 @@ export interface CommandReceipt {
 export interface RefineTransportSession {
   readonly serverEpoch: string;
   readonly runResumed: boolean;
+  readonly activatedCapabilities: readonly string[];
   send(command: ClientCommand, commandId?: string): Promise<CommandReceipt>;
   events(signal: AbortSignal): AsyncIterable<ServerEventEnvelope>;
   close(): Promise<void>;
@@ -85,26 +106,79 @@ export class EndpointReplacedError extends TransportProtocolError {
   }
 }
 
-export type RequiredCompatibilityUpdate = "server" | "client";
+export interface ProtocolVersion {
+  readonly major: number;
+  readonly minor: number;
+}
 
-export class IncompatibleProtocolError extends TransportProtocolError {
+export type HandshakeRejectionReason = HandshakeRejectedFrame["reason"];
+
+export class HandshakeRejectedError extends TransportProtocolError {
+  declare readonly receivedProtocol?: ProtocolVersion;
+
   constructor(
-    message: string,
-    readonly requiredUpdate: RequiredCompatibilityUpdate,
+    readonly reason: HandshakeRejectionReason,
+    readonly recovery: HandshakeRecovery,
+    readonly protocol: ProtocolVersion,
+    receivedProtocol?: ProtocolVersion,
     options?: ErrorOptions,
   ) {
-    super(message, "fatal", options);
+    super(
+      `Refine rejected the Integration Protocol connection: ${reason}/${recovery}`,
+      recovery === "none" ? "fatal" : "recoverable",
+      options,
+    );
+    if (receivedProtocol !== undefined) {
+      this.receivedProtocol = receivedProtocol;
+    }
+    this.name = "HandshakeRejectedError";
+  }
+}
+
+export class IncompatibleProtocolError extends HandshakeRejectedError {
+  constructor(
+    readonly serverProtocol: ProtocolVersion,
+    readonly clientProtocol: ProtocolVersion = {
+      major: PROTOCOL_MAJOR,
+      minor: PROTOCOL_MINOR,
+    },
+    options?: ErrorOptions,
+  ) {
+    super(
+      "incompatibleProtocol",
+      "none",
+      serverProtocol,
+      clientProtocol,
+      options,
+    );
+    this.message = `Refine reported Integration Protocol ${serverProtocol.major}.${serverProtocol.minor}; this client requires Integration Protocol ${clientProtocol.major}.${clientProtocol.minor}`;
     this.name = "IncompatibleProtocolError";
   }
 }
 
 export class RefineTransport {
   private readonly client: IntegrationClientIdentity;
+  private readonly frontend: HelloFrame["frontend"] | undefined;
+  private readonly hostCapabilities: HelloFrame["hostCapabilities"];
+  private readonly offeredCapabilities: readonly string[];
   private readonly endpointLocator: EndpointLocator;
   private readonly connector: FrameConnector;
 
   constructor(options: RefineTransportOptions) {
+    requireProtocolIdentifier(options.client.id, "client.id", TypeError);
+    requireProtocolIdentifier(options.client.version, "client.version", TypeError);
+    requireProtocolIdentifier(options.client.host, "client.host", TypeError);
+    if (options.frontend !== undefined) {
+      requireProtocolIdentifier(options.frontend.id, "frontend.id", TypeError);
+    }
     this.client = options.client;
+    this.frontend = options.frontend;
+    this.hostCapabilities = validateHostCapabilities(
+      options.hostCapabilities ?? {
+        interceptableSuggestionActionKeys: SUGGESTION_ACTION_KEYS,
+      },
+    );
+    this.offeredCapabilities = validateCapabilityOffers(options.capabilities ?? []);
     this.endpointLocator = options.endpointLocator ?? new FileEndpointLocator();
     this.connector = options.connector ?? new UnixFrameConnector();
   }
@@ -113,14 +187,16 @@ export class RefineTransport {
     signal: AbortSignal,
     options: RefineConnectOptions = {},
   ): Promise<RefineTransportSession> {
+    const runId = options.runId ?? randomUUID();
+    requireProtocolIdentifier(runId, "hello.runId", TypeError);
     let endpoint: Awaited<ReturnType<EndpointLocator["locate"]>>;
     try {
       endpoint = await this.endpointLocator.locate();
     } catch (error) {
       if (error instanceof EndpointProtocolVersionError) {
         throw new IncompatibleProtocolError(
-          error.message,
-          requiredUpdateForServerProtocol(error.receivedProtocol),
+          error.receivedProtocol,
+          undefined,
           { cause: error },
         );
       }
@@ -139,12 +215,11 @@ export class RefineTransport {
       type: "hello",
       protocol: { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR },
       client: this.client,
-      hostCapabilities: {
-        interceptableSuggestionActionKeys: SUGGESTION_ACTION_KEYS,
-      },
-      runId: options.runId ?? randomUUID(),
+      ...(this.frontend === undefined ? {} : { frontend: this.frontend }),
+      hostCapabilities: this.hostCapabilities,
+      runId,
       launchToken: endpoint.launchToken,
-      capabilities: [],
+      capabilities: this.offeredCapabilities,
     };
 
     try {
@@ -163,7 +238,7 @@ export class RefineTransport {
           "recoverable",
         );
       }
-      const welcome = decodeHandshakeResponse(first.value);
+      const welcome = decodeHandshakeResponse(first.value, this.offeredCapabilities);
       if (welcome.serverEpoch !== endpoint.serverEpoch) {
         throw new EndpointReplacedError();
       }
@@ -172,11 +247,59 @@ export class RefineTransport {
         frames,
         welcome.serverEpoch,
         welcome.runResumed,
+        welcome.capabilities,
       );
     } catch (error) {
       await connection.close().catch(() => undefined);
       throw error;
     }
+  }
+}
+
+function validateHostCapabilities(
+  hostCapabilities: HelloFrame["hostCapabilities"],
+): HelloFrame["hostCapabilities"] {
+  const actionKeys = hostCapabilities.interceptableSuggestionActionKeys;
+  if (new Set(actionKeys).size !== actionKeys.length) {
+    throw new TypeError("Interceptable suggestion action keys must be duplicate-free");
+  }
+  if (actionKeys.some((key) => !isSuggestionActionKey(key))) {
+    throw new TypeError("Interceptable suggestion action keys contain an unknown key");
+  }
+  return { interceptableSuggestionActionKeys: [...actionKeys] };
+}
+
+function validateCapabilityOffers(capabilities: readonly string[]): readonly string[] {
+  if (capabilities.length > MAX_CAPABILITIES) {
+    throw new RangeError(
+      `Capability offers cannot contain more than ${MAX_CAPABILITIES} entries`,
+    );
+  }
+  if (new Set(capabilities).size !== capabilities.length) {
+    throw new TypeError("Capability offers must be duplicate-free");
+  }
+  if (capabilities.some((capability) => !isProtocolIdentifier(capability))) {
+    throw new TypeError(
+      "Capability identifiers must contain 1 to 128 visible ASCII bytes",
+    );
+  }
+  return [...capabilities];
+}
+
+function isProtocolIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[\x21-\x7e]{1,128}$/.test(value);
+}
+
+function requireProtocolIdentifier(
+  value: unknown,
+  label: string,
+  ErrorType: typeof TypeError | typeof TransportProtocolError =
+    TransportProtocolError,
+): asserts value is string {
+  if (!isProtocolIdentifier(value)) {
+    throw new ErrorType(
+      `${label} must be a 1-to-128-byte visible ASCII identifier`,
+    );
   }
 }
 
@@ -243,6 +366,7 @@ function abortReason(signal: AbortSignal): unknown {
 
 class Session implements RefineTransportSession {
   private commandSequence = 0;
+  private readonly commandIds = new Set<string>();
   private expectedEventSequence = 1;
   private eventsClaimed = false;
   private closed = false;
@@ -253,6 +377,7 @@ class Session implements RefineTransportSession {
     private readonly frames: AsyncIterator<unknown>,
     readonly serverEpoch: string,
     readonly runResumed: boolean,
+    readonly activatedCapabilities: readonly string[],
   ) {}
 
   async send(command: ClientCommand, commandId?: string): Promise<CommandReceipt> {
@@ -260,14 +385,25 @@ class Session implements RefineTransportSession {
       if (this.closed) {
         throw new Error("Refine transport session is closed");
       }
+      const id = commandId ?? randomUUID();
+      validateOutboundCommand(command, id);
+      if (this.commandIds.has(id)) {
+        throw new TransportProtocolError(
+          "Client command ID must be unique within a session",
+        );
+      }
       if (this.commandSequence >= 0xffff_ffff) {
         throw new TransportProtocolError("Client command sequence exhausted");
       }
       const sequence = this.commandSequence + 1;
-      const id = commandId ?? randomUUID();
       const envelope: ClientCommandEnvelope = { type: "command", sequence, id, command };
       await this.connection.send(envelope);
       this.commandSequence = sequence;
+      this.commandIds.add(id);
+      if (sequence === 0xffff_ffff) {
+        this.closed = true;
+        await this.connection.close();
+      }
       return { sequence, id };
     });
     this.sendTail = operation.then(
@@ -296,6 +432,12 @@ class Session implements RefineTransportSession {
           `Expected server event sequence ${this.expectedEventSequence}, received ${envelope.sequence}`,
         );
       }
+      if (envelope.sequence === 0xffff_ffff) {
+        this.closed = true;
+        await this.connection.close();
+        yield envelope;
+        return;
+      }
       this.expectedEventSequence += 1;
       yield envelope;
     }
@@ -310,16 +452,280 @@ class Session implements RefineTransportSession {
   }
 }
 
-function decodeHandshakeResponse(value: unknown): WelcomeFrame {
+function validateOutboundCommand(command: ClientCommand, commandId: string): void {
+  requireProtocolIdentifier(commandId, "command.id");
+  const object = requireRecord(command, "Client command");
+  switch (object.type) {
+    case "openDocument":
+    case "replaceDocument":
+      validateOutboundSnapshot(object.snapshot, "snapshot");
+      return;
+    case "updateAttention": {
+      requireProtocolIdentifier(object.revision, "updateAttention.revision");
+      const attention = requireRecord(
+        object.attention,
+        "updateAttention.attention",
+      );
+      requireProtocolIdentifier(
+        attention.sourceId,
+        "updateAttention.attention.sourceId",
+      );
+      if (
+        attention.caretOffset !== undefined &&
+        !isSafeUnsignedInteger(attention.caretOffset)
+      ) {
+        throw new TransportProtocolError(
+          "updateAttention.attention.caretOffset must be a nonnegative safe integer",
+        );
+      }
+      validateVisibleRanges(attention.visibleRanges);
+      return;
+    }
+    case "requestCheck": {
+      requireProtocolIdentifier(object.revision, "requestCheck.revision");
+      if (object.intent === undefined) {
+        return;
+      }
+      const intent = requireRecord(object.intent, "requestCheck.intent");
+      if (intent.forcedLanguageTag !== undefined) {
+        requireProtocolIdentifier(
+          intent.forcedLanguageTag,
+          "requestCheck.intent.forcedLanguageTag",
+        );
+      }
+      if (intent.sourceIds !== undefined) {
+        if (!Array.isArray(intent.sourceIds) || intent.sourceIds.length < 1 || intent.sourceIds.length > 2) {
+          throw new TransportProtocolError(
+            "requestCheck.intent.sourceIds must contain between one and two source IDs",
+          );
+        }
+        requireUniqueProtocolIdentifiers(
+          intent.sourceIds as string[],
+          "requestCheck.intent.sourceIds",
+        );
+      }
+      if (intent.selection !== undefined) {
+        if (intent.sourceIds !== undefined) {
+          throw new TransportProtocolError(
+            "requestCheck.intent cannot contain both sourceIds and selection",
+          );
+        }
+        const selection = requireRecord(
+          intent.selection,
+          "requestCheck.intent.selection",
+        );
+        requireProtocolIdentifier(
+          selection.sourceId,
+          "requestCheck.intent.selection.sourceId",
+        );
+        validateOutboundRange(
+          selection.range,
+          "requestCheck.intent.selection.range",
+          true,
+        );
+      }
+      return;
+    }
+    case "performAction": {
+      requireProtocolIdentifier(object.actionId, "performAction.actionId");
+      if (!isSuggestionActionKind(object.kind)) {
+        throw new TransportProtocolError("Unknown performAction.kind");
+      }
+      const suggestion = requireRecord(
+        object.suggestion,
+        "performAction.suggestion",
+      );
+      requireProtocolIdentifier(
+        suggestion.id,
+        "performAction.suggestion.id",
+      );
+      requireProtocolIdentifier(
+        suggestion.documentRevision,
+        "performAction.suggestion.documentRevision",
+      );
+      return;
+    }
+    case "completeApply": {
+      requireProtocolIdentifier(
+        object.transactionId,
+        "completeApply.transactionId",
+      );
+      validateOutboundApplyOutcome(object.outcome);
+      return;
+    }
+    case "closeDocument":
+      return;
+    default:
+      throw new TransportProtocolError("Unknown client command type");
+  }
+}
+
+function validateOutboundSnapshot(
+  value: unknown,
+  label: string,
+): void {
+  const snapshot = requireRecord(value, label);
+  requireProtocolIdentifier(snapshot.revision, `${label}.revision`);
+  if (!Array.isArray(snapshot.sources) || snapshot.sources.length < 1 || snapshot.sources.length > 2) {
+    throw new TransportProtocolError(
+      `${label}.sources must contain between one and two sources`,
+    );
+  }
+  const sourceIds: string[] = [];
+  snapshot.sources.forEach((value, index) => {
+    const source = requireRecord(value, `${label}.sources[${index}]`);
+    requireProtocolIdentifier(
+      source.sourceId,
+      `${label}.sources[${index}].sourceId`,
+    );
+    if (typeof source.text !== "string") {
+      throw new TransportProtocolError(
+        `${label}.sources[${index}].text must be a string`,
+      );
+    }
+    if (!isSourceSyntax(source.sourceSyntax)) {
+      throw new TransportProtocolError(
+        `${label}.sources[${index}].sourceSyntax is unknown`,
+      );
+    }
+    if (Buffer.byteLength(source.text, "utf8") > MAX_SOURCE_BYTES) {
+      throw new TransportProtocolError(
+        `Source text must be at most ${MAX_SOURCE_BYTES} UTF-8 bytes`,
+      );
+    }
+    sourceIds.push(source.sourceId);
+  });
+  if (new Set(sourceIds).size !== sourceIds.length) {
+    throw new TransportProtocolError(
+      `${label} source IDs must be duplicate-free`,
+    );
+  }
+}
+
+function validateVisibleRanges(value: unknown): void {
+  if (!Array.isArray(value)) {
+    throw new TransportProtocolError(
+      "updateAttention.attention.visibleRanges must be an array",
+    );
+  }
+  let priorEnd: number | undefined;
+  value.forEach((range, index) => {
+    const decoded = validateOutboundRange(
+      range,
+      `updateAttention.attention.visibleRanges[${index}]`,
+      true,
+    );
+    if (priorEnd !== undefined && decoded.location < priorEnd) {
+      throw new TransportProtocolError(
+        "Visible ranges must be ordered and nonoverlapping",
+      );
+    }
+    priorEnd = decoded.location + decoded.length;
+  });
+}
+
+function validateOutboundRange(
+  value: unknown,
+  label: string,
+  nonempty: boolean,
+): { readonly location: number; readonly length: number } {
+  const range = requireRecord(value, label);
+  if (
+    !isSafeUnsignedInteger(range.location) ||
+    !isSafeUnsignedInteger(range.length) ||
+    (nonempty && range.length === 0) ||
+    range.location + range.length > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new TransportProtocolError(
+      `${label} must be a representable${nonempty ? " nonempty" : ""} UTF-16 range`,
+    );
+  }
+  return { location: range.location, length: range.length };
+}
+
+function validateOutboundApplyOutcome(value: unknown): void {
+  const outcome = requireRecord(value, "completeApply.outcome");
+  const validateOptionalSnapshot = (): void => {
+    if (outcome.snapshot !== undefined) {
+      validateOutboundSnapshot(
+        outcome.snapshot,
+        "completeApply.outcome.snapshot",
+      );
+    }
+  };
+  switch (outcome.status) {
+    case "applied":
+      if (Object.hasOwn(outcome, "reason")) {
+        throw new TransportProtocolError(
+          "Applied completeApply outcome cannot contain a reason",
+        );
+      }
+      validateOutboundSnapshot(
+        outcome.snapshot,
+        "completeApply.outcome.snapshot",
+      );
+      return;
+    case "rejected":
+      if (!isApplyRejectionReason(outcome.reason)) {
+        throw new TransportProtocolError("Unknown completeApply rejection reason");
+      }
+      validateOutboundSnapshot(
+        outcome.snapshot,
+        "completeApply.outcome.snapshot",
+      );
+      return;
+    case "unsupported":
+      if (!isApplyUnsupportedReason(outcome.reason)) {
+        throw new TransportProtocolError("Unknown completeApply unsupported reason");
+      }
+      validateOptionalSnapshot();
+      return;
+    case "unavailable":
+    case "indeterminate":
+      if (Object.hasOwn(outcome, "reason")) {
+        throw new TransportProtocolError(
+          `${outcome.status} completeApply outcome cannot contain a reason`,
+        );
+      }
+      validateOptionalSnapshot();
+      return;
+    default:
+      throw new TransportProtocolError("Unknown completeApply outcome status");
+  }
+}
+
+function requireUniqueProtocolIdentifiers(
+  values: readonly string[],
+  label: string,
+): void {
+  values.forEach((value, index) => {
+    requireProtocolIdentifier(value, `${label}[${index}]`);
+  });
+  if (new Set(values).size !== values.length) {
+    throw new TransportProtocolError(`${label} must be duplicate-free`);
+  }
+}
+
+function decodeHandshakeResponse(
+  value: unknown,
+  offeredCapabilities: readonly string[],
+): WelcomeFrame {
   const object = requireRecord(value, "handshake response");
   if (object.type === "rejected") {
     const rejection = decodeHandshakeRejection(object);
-    throw new IncompatibleProtocolError(
-      `Refine protocol ${rejection.protocol.major}.${rejection.protocol.minor} is incompatible with protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}`,
-      requiredUpdateForServerProtocol(rejection.protocol),
+    if (rejection.reason === "incompatibleProtocol") {
+      throw new IncompatibleProtocolError(
+        rejection.protocol,
+        rejection.receivedProtocol,
+      );
+    }
+    throw new HandshakeRejectedError(
+      rejection.reason,
+      rejection.recovery,
+      rejection.protocol,
     );
   }
-  return decodeWelcome(object);
+  return decodeWelcome(object, offeredCapabilities);
 }
 
 function decodeHandshakeRejection(
@@ -327,88 +733,166 @@ function decodeHandshakeRejection(
 ): HandshakeRejectedFrame {
   const protocol = requireRecord(object.protocol, "rejected.protocol");
   if (
-    object.reason !== "incompatibleProtocol" ||
+    object.type !== "rejected" ||
     !isUInt16(protocol.major) ||
-    !isUInt16(protocol.minor)
+    !isIntegerMember(protocol, "major", 0, 0xffff) ||
+    !isUInt16(protocol.minor) ||
+    !isIntegerMember(protocol, "minor", 0, 0xffff) ||
+    protocol.major !== PROTOCOL_MAJOR ||
+    protocol.minor !== PROTOCOL_MINOR
   ) {
     throw new TransportProtocolError("Malformed handshake rejection");
   }
-  return {
-    type: "rejected",
-    reason: "incompatibleProtocol",
-    protocol: { major: protocol.major, minor: protocol.minor },
-  };
+  const exactProtocol = {
+    major: PROTOCOL_MAJOR,
+    minor: PROTOCOL_MINOR,
+  } as const;
+  if (object.reason === "incompatibleProtocol" && object.recovery === "none") {
+    const received = requireRecord(
+      object.receivedProtocol,
+      "rejected.receivedProtocol",
+    );
+    if (
+      !isUInt16(received.major) ||
+      !isIntegerMember(received, "major", 0, 0xffff) ||
+      !isUInt16(received.minor) ||
+      !isIntegerMember(received, "minor", 0, 0xffff)
+    ) {
+      throw new TransportProtocolError("Malformed handshake rejection");
+    }
+    return {
+      type: "rejected",
+      reason: "incompatibleProtocol",
+      recovery: "none",
+      protocol: exactProtocol,
+      receivedProtocol: { major: received.major, minor: received.minor },
+    };
+  }
+  if ("receivedProtocol" in object) {
+    throw new TransportProtocolError("Malformed handshake rejection");
+  }
+  if (object.reason === "invalidClient" && object.recovery === "none") {
+    return {
+      type: "rejected",
+      reason: "invalidClient",
+      recovery: "none",
+      protocol: exactProtocol,
+    };
+  }
+  if (
+    object.reason === "runUnavailable" &&
+    (object.recovery === "newRun" || object.recovery === "retry")
+  ) {
+    return {
+      type: "rejected",
+      reason: "runUnavailable",
+      recovery: object.recovery,
+      protocol: exactProtocol,
+    };
+  }
+  if (
+    (object.reason === "serverBusy" || object.reason === "engineUnavailable") &&
+    object.recovery === "retry"
+  ) {
+    return {
+      type: "rejected",
+      reason: object.reason,
+      recovery: "retry",
+      protocol: exactProtocol,
+    };
+  }
+  throw new TransportProtocolError("Malformed handshake rejection");
 }
 
-function decodeWelcome(value: unknown): WelcomeFrame {
+function decodeWelcome(
+  value: unknown,
+  offeredCapabilities: readonly string[],
+): WelcomeFrame {
   const object = requireRecord(value, "welcome");
   const protocol = requireRecord(object.protocol, "welcome.protocol");
   const limits = requireRecord(object.limits, "welcome.limits");
-  if (!isUInt16(protocol.major) || !isUInt16(protocol.minor)) {
+  const serverEpoch = object.serverEpoch;
+  requireProtocolIdentifier(serverEpoch, "welcome.serverEpoch");
+  if (
+    !isUInt16(protocol.major) ||
+    !isIntegerMember(protocol, "major", 0, 0xffff) ||
+    !isUInt16(protocol.minor) ||
+    !isIntegerMember(protocol, "minor", 0, 0xffff)
+  ) {
     throw new TransportProtocolError("Malformed welcome protocol version");
   }
   if (protocol.major !== PROTOCOL_MAJOR || protocol.minor !== PROTOCOL_MINOR) {
     throw new IncompatibleProtocolError(
-      `Refine protocol ${protocol.major}.${protocol.minor} is incompatible with protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}`,
-      requiredUpdateForServerProtocol({
+      {
         major: protocol.major,
         minor: protocol.minor,
-      }),
+      },
     );
   }
   if (
     object.type !== "welcome" ||
-    typeof object.serverEpoch !== "string" ||
-    object.serverEpoch.length === 0 ||
     typeof object.runResumed !== "boolean" ||
     limits.maxFrameBytes !== MAX_FRAME_BYTES ||
+    !isIntegerMember(limits, "maxFrameBytes", MAX_FRAME_BYTES, MAX_FRAME_BYTES) ||
     limits.maxSources !== 2 ||
+    !isIntegerMember(limits, "maxSources", 2, 2) ||
+    limits.maxSourceBytes !== MAX_SOURCE_BYTES ||
+    !isIntegerMember(limits, "maxSourceBytes", MAX_SOURCE_BYTES, MAX_SOURCE_BYTES) ||
     !isStringArray(object.capabilities)
   ) {
     throw new TransportProtocolError("Malformed or incompatible welcome frame");
   }
+  if (object.capabilities.length > MAX_CAPABILITIES) {
+    throw new TransportProtocolError(
+      `Capability activations cannot contain more than ${MAX_CAPABILITIES} entries`,
+    );
+  }
+  if (new Set(object.capabilities).size !== object.capabilities.length) {
+    throw new TransportProtocolError("Capability activations must be duplicate-free");
+  }
+  if (object.capabilities.some((capability) => !isProtocolIdentifier(capability))) {
+    throw new TransportProtocolError("Malformed capability activation identifier");
+  }
+  const offered = new Set(offeredCapabilities);
+  if (object.capabilities.some((capability) => !offered.has(capability))) {
+    throw new TransportProtocolError("Server activated an unsupported capability");
+  }
   return {
     type: "welcome",
     protocol: { major: PROTOCOL_MAJOR, minor: PROTOCOL_MINOR },
-    serverEpoch: object.serverEpoch,
+    serverEpoch,
     runResumed: object.runResumed,
-    limits: { maxFrameBytes: MAX_FRAME_BYTES, maxSources: 2 },
-    capabilities: object.capabilities,
+    limits: {
+      maxFrameBytes: MAX_FRAME_BYTES,
+      maxSources: 2,
+      maxSourceBytes: MAX_SOURCE_BYTES,
+    },
+    capabilities: [...object.capabilities],
   };
-}
-
-function requiredUpdateForServerProtocol(protocol: {
-  readonly major: number;
-  readonly minor: number;
-}): RequiredCompatibilityUpdate {
-  if (
-    protocol.major > PROTOCOL_MAJOR ||
-    (protocol.major === PROTOCOL_MAJOR && protocol.minor > PROTOCOL_MINOR)
-  ) {
-    return "client";
-  }
-  return "server";
 }
 
 function decodeEventEnvelope(value: unknown): ServerEventEnvelope {
   const object = requireRecord(value, "event envelope");
+  const epoch = object.epoch;
+  requireProtocolIdentifier(epoch, "event.epoch");
+  if (object.causeCommandId !== undefined) {
+    requireProtocolIdentifier(object.causeCommandId, "event.causeCommandId");
+  }
   if (
     object.type !== "event" ||
     !isUInt32(object.sequence) ||
-    object.sequence === 0 ||
-    typeof object.epoch !== "string" ||
-    object.epoch.length === 0 ||
-    (object.causeCommandId !== undefined && typeof object.causeCommandId !== "string")
+    !isIntegerMember(object, "sequence", 1, 0xffff_ffff) ||
+    object.sequence === 0
   ) {
     throw new TransportProtocolError("Malformed server event envelope");
   }
   const event = decodeServerEvent(object.event);
   return object.causeCommandId === undefined
-    ? { type: "event", sequence: object.sequence, epoch: object.epoch, event }
+    ? { type: "event", sequence: object.sequence, epoch, event }
     : {
         type: "event",
         sequence: object.sequence,
-        epoch: object.epoch,
+        epoch,
         causeCommandId: object.causeCommandId,
         event,
       };
@@ -418,7 +902,7 @@ function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
   const event = requireRecord(value, "server event");
   switch (event.type) {
     case "documentAccepted":
-      requireNonemptyString(event.revision, "documentAccepted.revision");
+      requireProtocolIdentifier(event.revision, "documentAccepted.revision");
       return { type: "documentAccepted", revision: event.revision };
     case "resyncRequired":
       if (!isResyncReason(event.reason)) {
@@ -426,15 +910,15 @@ function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
       }
       return { type: "resyncRequired", reason: event.reason };
     case "presentationContentReplaced":
-      requireNonemptyString(event.checkId, "presentationContentReplaced.checkId");
+      requireProtocolIdentifier(event.checkId, "presentationContentReplaced.checkId");
       return {
         type: "presentationContentReplaced",
         checkId: event.checkId,
         content: decodePresentationContent(event.content),
       };
     case "applyRequested":
-      requireNonemptyString(event.actionId, "applyRequested.actionId");
-      requireNonemptyString(event.transactionId, "applyRequested.transactionId");
+      requireProtocolIdentifier(event.actionId, "applyRequested.actionId");
+      requireProtocolIdentifier(event.transactionId, "applyRequested.transactionId");
       return {
         type: "applyRequested",
         actionId: event.actionId,
@@ -442,27 +926,30 @@ function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
         request: decodeApplyRequest(event.request),
       };
     case "explanationReplaced":
-      requireNonemptyString(event.actionId, "explanationReplaced.actionId");
+      requireProtocolIdentifier(event.actionId, "explanationReplaced.actionId");
       return {
         type: "explanationReplaced",
         actionId: event.actionId,
         update: decodeExplanationUpdate(event.update),
       };
     case "actionCompleted":
-      requireNonemptyString(event.actionId, "actionCompleted.actionId");
+      requireProtocolIdentifier(event.actionId, "actionCompleted.actionId");
       return { type: "actionCompleted", actionId: event.actionId };
     case "actionRejected":
-      requireNonemptyString(event.actionId, "actionRejected.actionId");
+      requireProtocolIdentifier(event.actionId, "actionRejected.actionId");
       if (!isActionRejectionReason(event.reason)) {
         throw new TransportProtocolError("Malformed actionRejected.reason");
       }
       return { type: "actionRejected", actionId: event.actionId, reason: event.reason };
     case "fault":
-      requireNonemptyString(event.code, "fault.code");
-      if (typeof event.fatal !== "boolean") {
-        throw new TransportProtocolError("fault.fatal must be a boolean");
+      if (!isFaultSeverityPair(event.code, event.fatal)) {
+        throw new TransportProtocolError("Malformed fault severity pair");
       }
-      return { type: "fault", code: event.code, fatal: event.fatal };
+      return {
+        type: "fault",
+        code: event.code,
+        fatal: event.fatal,
+      } as Extract<ServerEventEnvelope["event"], { readonly type: "fault" }>;
     default:
       throw new TransportProtocolError("Unknown server event type");
   }
@@ -470,40 +957,96 @@ function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
 
 function decodePresentationContent(value: unknown): PresentationContent {
   const content = requireRecord(value, "presentation content");
-  requireNonemptyString(content.documentRevision, "presentation.documentRevision");
+  requireProtocolIdentifier(content.documentRevision, "presentation.documentRevision");
   if (!isPresentationStatus(content.status) || !Array.isArray(content.suggestions)) {
     throw new TransportProtocolError("Malformed presentation content");
+  }
+  const hasCoverage = Object.hasOwn(content, "coverage");
+  const hasUnavailableReason = Object.hasOwn(content, "unavailableReason");
+  const hasProgress = Object.hasOwn(content, "progress");
+  const coverage = isPresentationCoverage(content.coverage)
+    ? content.coverage
+    : undefined;
+  const unavailableReason = isPresentationUnavailableReason(
+    content.unavailableReason,
+  )
+    ? content.unavailableReason
+    : undefined;
+  switch (content.status) {
+    case "pending":
+      if (
+        content.suggestions.length !== 0 ||
+        hasCoverage ||
+        hasUnavailableReason ||
+        hasProgress
+      ) {
+        throw new TransportProtocolError("Malformed pending presentation branch");
+      }
+      break;
+    case "checking":
+      if (hasCoverage || hasUnavailableReason) {
+        throw new TransportProtocolError("Malformed checking presentation branch");
+      }
+      break;
+    case "complete":
+      if (
+        !hasCoverage ||
+        coverage === undefined ||
+        hasUnavailableReason ||
+        hasProgress
+      ) {
+        throw new TransportProtocolError("Malformed complete presentation branch");
+      }
+      break;
+    case "unavailable":
+      if (
+        content.suggestions.length !== 0 ||
+        hasCoverage ||
+        !hasUnavailableReason ||
+        unavailableReason === undefined ||
+        hasProgress
+      ) {
+        throw new TransportProtocolError("Malformed unavailable presentation branch");
+      }
+      break;
+    case "closed":
+      if (
+        content.suggestions.length !== 0 ||
+        hasCoverage ||
+        hasUnavailableReason ||
+        hasProgress
+      ) {
+        throw new TransportProtocolError("Malformed closed presentation branch");
+      }
+      break;
   }
   const suggestions = content.suggestions.map(decodePresentedSuggestion);
   const appearance = decodePresentationAppearance(content.appearance);
   const interaction = decodePresentationInteraction(content.interaction);
-  const progress = content.progress === undefined
+  const progress = !hasProgress
     ? undefined
     : decodeCheckingProgress(content.progress);
-  if (progress !== undefined && content.status !== "checking") {
-    throw new TransportProtocolError("Presentation progress requires checking status");
-  }
   if (content.status === "complete") {
-    if (content.coverage !== "full" && content.coverage !== "partial") {
-      throw new TransportProtocolError("Complete presentation requires coverage");
+    if (coverage === undefined) {
+      throw new TransportProtocolError("Malformed complete presentation branch");
     }
     return {
       documentRevision: content.documentRevision,
       status: "complete",
-      coverage: content.coverage,
+      coverage,
       appearance,
       interaction,
       suggestions,
     };
   }
   if (content.status === "unavailable") {
-    if (!isUnavailableReason(content.unavailableReason)) {
-      throw new TransportProtocolError("Unavailable presentation requires unavailableReason");
+    if (unavailableReason === undefined) {
+      throw new TransportProtocolError("Malformed unavailable presentation branch");
     }
     return {
       documentRevision: content.documentRevision,
       status: "unavailable",
-      unavailableReason: content.unavailableReason,
+      unavailableReason,
       appearance,
       interaction,
       suggestions,
@@ -535,11 +1078,12 @@ function decodeCheckingProgress(
   const completedUnitCount = progress.completedUnitCount;
   const totalUnitCount = progress.totalUnitCount;
   if (
-    !hasExactKeys(progress, ["completedUnitCount", "totalUnitCount"]) ||
     typeof completedUnitCount !== "number" ||
     typeof totalUnitCount !== "number" ||
     !Number.isSafeInteger(completedUnitCount) ||
     !Number.isSafeInteger(totalUnitCount) ||
+    !isIntegerMember(progress, "completedUnitCount", 0) ||
+    !isIntegerMember(progress, "totalUnitCount", 0) ||
     completedUnitCount < 0 ||
     totalUnitCount < 0 ||
     completedUnitCount > totalUnitCount
@@ -559,16 +1103,7 @@ function decodePresentationAppearance(
   const highlight = requireRecord(appearance.highlight, "presentation.appearance.highlight");
   const diff = requireRecord(appearance.diff, "presentation.appearance.diff");
   if (
-    !hasExactKeys(appearance, ["highlight", "diff"]) ||
-    !hasExactKeys(highlight, ["style", "grammarColor", "fluencyColor"]) ||
-    !hasExactKeys(diff, [
-      "additionColor",
-      "deletionColor",
-      "showHiddenWhitespace",
-    ]) ||
-    (highlight.style !== "underline" &&
-      highlight.style !== "dashedUnderline" &&
-      highlight.style !== "highlight") ||
+    !isSuggestionHighlightStyle(highlight.style) ||
     !isCanonicalRGBColor(highlight.grammarColor) ||
     !isCanonicalRGBColor(highlight.fluencyColor) ||
     !isCanonicalRGBColor(diff.additionColor) ||
@@ -598,19 +1133,11 @@ function decodePresentationInteraction(value: unknown): PresentationInteraction 
     "presentation.interaction.quickApply",
   );
   if (
-    !hasExactKeys(interaction, ["automaticChecksEnabled", "quickApply"]) ||
-    !hasExactKeys(quickApply, [
-      "enabled",
-      "applyKey",
-      "dismissKey",
-      "activationStyle",
-    ]) ||
     typeof interaction.automaticChecksEnabled !== "boolean" ||
     typeof quickApply.enabled !== "boolean" ||
     !isSuggestionActionKey(quickApply.applyKey) ||
     !isSuggestionActionKey(quickApply.dismissKey) ||
-    (quickApply.activationStyle !== "highlightChanges" &&
-      quickApply.activationStyle !== "showTipAndHighlight")
+    !isQuickApplyActivationStyle(quickApply.activationStyle)
   ) {
     throw new TransportProtocolError("Malformed presentation interaction");
   }
@@ -625,33 +1152,17 @@ function decodePresentationInteraction(value: unknown): PresentationInteraction 
   };
 }
 
-function isSuggestionActionKey(value: unknown): value is SuggestionActionKey {
-  return (SUGGESTION_ACTION_KEYS as readonly unknown[]).includes(value);
-}
-
 function isCanonicalRGBColor(value: unknown): value is string {
   return typeof value === "string" && /^#[0-9A-F]{6}$/.test(value);
-}
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean {
-  const actual = Object.keys(value);
-  return actual.length === expected.length && expected.every((key) => key in value);
 }
 
 function decodePresentedSuggestion(
   value: unknown,
 ): import("../integration/types").PresentedSuggestion {
   const suggestion = requireRecord(value, "presented suggestion");
-  requireNonemptyString(suggestion.id, "suggestion.id");
-  requireNonemptyString(suggestion.sourceId, "suggestion.sourceId");
-  if (
-    suggestion.kind !== "grammar" &&
-    suggestion.kind !== "fluency" &&
-    suggestion.kind !== "mixed"
-  ) {
+  requireProtocolIdentifier(suggestion.id, "suggestion.id");
+  requireProtocolIdentifier(suggestion.sourceId, "suggestion.sourceId");
+  if (!isSuggestionKind(suggestion.kind)) {
     throw new TransportProtocolError("Malformed suggestion kind");
   }
   if (
@@ -666,19 +1177,24 @@ function decodePresentedSuggestion(
     "suggestion.attribution",
   );
   if (
-    !hasExactKeys(attribution, [
-      "languageDisplayName",
-      "textDirection",
-      "checkModelDisplayName",
-    ]) ||
     typeof attribution.languageDisplayName !== "string" ||
     attribution.languageDisplayName.length === 0 ||
-    (attribution.textDirection !== "ltr" &&
-      attribution.textDirection !== "rtl") ||
+    !isTextDirection(attribution.textDirection) ||
     typeof attribution.checkModelDisplayName !== "string" ||
     attribution.checkModelDisplayName.length === 0
   ) {
     throw new TransportProtocolError("Malformed suggestion attribution");
+  }
+  const availableActions = suggestion.availableActions.map((action) => {
+    if (!isSuggestionActionKind(action)) {
+      throw new TransportProtocolError("Malformed suggestion action");
+    }
+    return action;
+  });
+  if (new Set(availableActions).size !== availableActions.length) {
+    throw new TransportProtocolError(
+      "Suggestion available actions must be duplicate-free",
+    );
   }
   return {
     id: suggestion.id,
@@ -697,19 +1213,14 @@ function decodePresentedSuggestion(
     diff: suggestion.diff.map((run) => {
       const object = requireRecord(run, "diff run");
       if (
-        (object.kind !== "unchanged" && object.kind !== "delete" && object.kind !== "insert") ||
+        !isDiffRunKind(object.kind) ||
         typeof object.text !== "string"
       ) {
         throw new TransportProtocolError("Malformed diff run");
       }
       return { kind: object.kind, text: object.text };
     }),
-    availableActions: suggestion.availableActions.map((action) => {
-      if (action !== "apply" && action !== "dismiss" && action !== "explain" && action !== "report") {
-        throw new TransportProtocolError("Malformed suggestion action");
-      }
-      return action;
-    }),
+    availableActions,
   };
 }
 
@@ -718,45 +1229,70 @@ function decodeExactRange(
   label: string,
 ): import("../integration/types").UTF16Range {
   const range = requireRecord(value, label);
-  if (!hasExactKeys(range, ["location", "length"])) {
-    throw new TransportProtocolError(`${label} must contain only location and length`);
-  }
   return decodeRange(range);
 }
 
 function decodeApplyRequest(value: unknown): import("../integration/types").HostApplyRequest {
   const request = requireRecord(value, "apply request");
-  requireNonemptyString(request.expectedRevision, "apply.expectedRevision");
-  requireNonemptyString(request.sourceId, "apply.sourceId");
+  requireProtocolIdentifier(request.expectedRevision, "apply.expectedRevision");
+  requireProtocolIdentifier(request.sourceId, "apply.sourceId");
   if (!Array.isArray(request.edits) || request.edits.length === 0) {
     throw new TransportProtocolError("Apply request requires edits");
+  }
+  const edits = request.edits.map((edit) => {
+    const object = requireRecord(edit, "host edit");
+    if (typeof object.expectedText !== "string" || typeof object.replacement !== "string") {
+      throw new TransportProtocolError("Malformed host edit");
+    }
+    return {
+      range: decodeRange(object.range),
+      expectedText: object.expectedText,
+      replacement: object.replacement,
+    };
+  });
+  let priorLocation: number | undefined;
+  for (const edit of edits) {
+    const { location, length } = edit.range;
+    if (
+      edit.expectedText === edit.replacement ||
+      (priorLocation !== undefined &&
+        (location >= priorLocation || location + length > priorLocation))
+    ) {
+      throw new TransportProtocolError(
+        "Apply request edits must be descending without ties, overlaps, or no-ops",
+      );
+    }
+    priorLocation = location;
   }
   return {
     expectedRevision: request.expectedRevision,
     sourceId: request.sourceId,
-    edits: request.edits.map((edit) => {
-      const object = requireRecord(edit, "host edit");
-      if (typeof object.expectedText !== "string" || typeof object.replacement !== "string") {
-        throw new TransportProtocolError("Malformed host edit");
-      }
-      return {
-        range: decodeRange(object.range),
-        expectedText: object.expectedText,
-        replacement: object.replacement,
-      };
-    }),
+    edits,
   };
 }
 
 function decodeRange(value: unknown): import("../integration/types").UTF16Range {
   const range = requireRecord(value, "UTF-16 range");
-  if (!Number.isSafeInteger(range.location) || !Number.isSafeInteger(range.length)) {
+  if (
+    !Number.isSafeInteger(range.location) ||
+    !isIntegerMember(range, "location", 0) ||
+    !Number.isSafeInteger(range.length) ||
+    !isIntegerMember(range, "length", 0)
+  ) {
     throw new TransportProtocolError("Range coordinates must be integers");
   }
-  if ((range.location as number) < 0 || (range.length as number) < 0) {
-    throw new TransportProtocolError("Range coordinates must be nonnegative");
+  const location = range.location as number;
+  const length = range.length as number;
+  if (
+    location < 0 ||
+    length < 0 ||
+    location > Number.MAX_SAFE_INTEGER - length
+  ) {
+    throw new TransportProtocolError(
+      "Range coordinates must form a representable nonnegative endpoint",
+    );
   }
-  return { location: range.location as number, length: range.length as number };
+  return { location, length };
 }
 
 function decodeExplanationUpdate(
@@ -769,15 +1305,9 @@ function decodeExplanationUpdate(
       "explanation attribution",
     );
     if (
-      !hasExactKeys(attribution, [
-        "languageDisplayName",
-        "textDirection",
-        "modelDisplayName",
-      ]) ||
       typeof attribution.languageDisplayName !== "string" ||
       attribution.languageDisplayName.length === 0 ||
-      (attribution.textDirection !== "ltr" &&
-        attribution.textDirection !== "rtl") ||
+      !isTextDirection(attribution.textDirection) ||
       typeof attribution.modelDisplayName !== "string" ||
       attribution.modelDisplayName.length === 0
     ) {
@@ -817,12 +1347,6 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function requireNonemptyString(value: unknown, label: string): asserts value is string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new TransportProtocolError(`${label} must be a nonempty string`);
-  }
-}
-
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
@@ -835,63 +1359,6 @@ function isUInt16(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff;
 }
 
-function isPresentationStatus(
-  value: unknown,
-): value is "pending" | "checking" | "complete" | "unavailable" | "closed" {
-  return (
-    value === "pending" ||
-    value === "checking" ||
-    value === "complete" ||
-    value === "unavailable" ||
-    value === "closed"
-  );
-}
-
-function isUnavailableReason(
-  value: unknown,
-): value is
-  | "disconnected"
-  | "engineUnavailable"
-  | "checkFailed"
-  | "invalidDocument"
-  | "unsupportedSource"
-  | "resourceLimit"
-  | "writingCheckEntitlementRequired";
-function isUnavailableReason(value: unknown): boolean {
-  return (
-    value === "disconnected" ||
-    value === "engineUnavailable" ||
-    value === "checkFailed" ||
-    value === "invalidDocument" ||
-    value === "unsupportedSource" ||
-    value === "resourceLimit" ||
-    value === "writingCheckEntitlementRequired"
-  );
-}
-
-function isActionUnavailableReason(
-  value: unknown,
-): value is import("../integration/types").ActionUnavailableReason {
-  return (
-    value === "disconnected" ||
-    value === "engineUnavailable" ||
-    value === "validationUnavailable" ||
-    value === "readOnly" ||
-    value === "nonAtomic" ||
-    value === "mutationUnavailable" ||
-    value === "mutationIndeterminate" ||
-    value === "applyNotProven" ||
-    value === "reportingUnavailable"
-  );
-}
-
-function isResyncReason(
-  value: unknown,
-): value is import("./wire").ResyncReason {
-  return (
-    value === "documentNotOpen" ||
-    value === "conflictingRevision" ||
-    value === "reusedRevision" ||
-    value === "invalidDocument"
-  );
+function isSafeUnsignedInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }

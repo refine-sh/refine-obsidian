@@ -10,7 +10,7 @@
 <h1 align="center">Refine for Obsidian: Local AI Grammar Checker</h1>
 
 <p align="center">
-  <strong>A private, offline AI grammar checker and writing assistant for Obsidian on Mac.</strong>
+  <strong>A local-first AI grammar checker and writing assistant for Obsidian on Mac.</strong>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@ your editor.
 
 Features:
 
-- Private, offline checks powered by a local LLM on your device
+- Offline checks powered by a downloaded local LLM on your device
 - Inline highlights and suggestion cards for reviewing changes in context
 - Clear explanations of why each change is suggested
 
@@ -38,7 +38,7 @@ Features:
 
 - macOS 14 or later
 - Obsidian desktop 1.5.0 or later
-- [Refine for Mac](https://refine.sh/) 1.35 pr later
+- [Refine for Mac](https://refine.sh/) 1.35 or later
 
 Refine includes a full-featured seven-day trial with no credit card required.
 
@@ -60,7 +60,9 @@ typing briefly.
 1. Hover over highlighted text to open its suggestion card.
 2. Review the change and inspect the language and model used for the check. If
    the action is available, choose **Explain** for more context.
-3. Choose **Apply** to accept the correction or **Dismiss** to ignore it.
+3. Choose **Apply** to accept the correction or **Dismiss** to ignore it. When
+   Refine offers **Report**, selecting it explicitly sends feedback about that
+   live suggestion; reports are never submitted automatically.
 
 The Refine icon in Obsidian's status bar shows the connection, checking
 progress, and suggestion count. Select it to open the Refine menu. To check on
@@ -71,16 +73,29 @@ Quick Apply shortcuts are configured in the Refine app.
 
 ## Privacy and offline use
 
-When a writing task uses a downloaded local model, the note text sent for that
-check and the model's response stay on your Mac. The writing check can run
+The plugin sends the complete active Markdown note to the Refine app over a
+same-user Unix socket so Refine can check it. With a downloaded local model,
+the source and model response stay on your Mac, and writing checks can run
 without an internet connection after the model is downloaded.
 
 Refine can also use hosted providers that you configure. In that case, requests
-go directly from your Mac to the selected provider and are subject to that
-provider's privacy and retention policies. App and model downloads, updates,
-standard license activation and periodic validation, and hosted checks require
-internet access. An online-activated license can continue through network
-errors for up to 21 days after its last successful validation.
+from the Refine app—including note source—may go to the selected provider and
+are subject to that provider's privacy and retention policies.
+
+**Report is separate from the writing-check provider.** Only choosing
+**Report** on a live suggestion can send feedback to Refine's feedback service,
+and only when Refine makes that action available. A report may contain original
+and revised snippets plus language, provider, model, custom-instruction, Refine
+version, and macOS version context. The plugin does not automatically report
+suggestions.
+
+This plugin does not send its own analytics or persist note source. It keeps the
+active integration state in memory; Obsidian and any other installed plugins
+have their own logging, telemetry, and retention behavior. App and model
+downloads, updates, standard license activation and periodic validation,
+hosted checks, and Report require internet access. An online-activated license
+can continue through network errors for up to 21 days after its last successful
+validation.
 
 [Learn how Refine handles your writing](https://refine.sh/guides/how-refine-works)
 or read the [privacy policy](https://refine.sh/privacy-policy).
@@ -91,7 +106,9 @@ or read the [privacy policy](https://refine.sh/privacy-policy).
 
 Make sure Refine is installed, open, and up to date. Then select the Refine icon
 in Obsidian's status bar to see the current connection state. The plugin
-reconnects automatically after Refine restarts.
+reconnects automatically after Refine restarts. If the exact Integration
+Protocol versions differ, the plugin reports both versions and asks for a
+compatible Refine/plugin pair; it does not guess which component is newer.
 
 ### No suggestions appear
 
@@ -146,6 +163,23 @@ For plugin bugs and feature requests, open a
 [GitHub issue](https://github.com/runjuu/refine-obsidian/issues). For help with
 the Refine app, email [support@refine.sh](mailto:support@refine.sh).
 
+Refine supports same-user macOS writing-host clients connecting to the shipping
+Refine server with exact Integration Protocol 1.0. Protocol 1.0 compatibility
+is maintained throughout Refine 1.x. The support profile does not include
+network transports, cross-user
+access, other operating systems, sandbox workarounds, automatic app launch, or
+third-party production servers, and it does not include an integration-
+development SLA or certification program. Conformance is self-assessed; there
+is no approval gate or compatibility badge.
+
+The public statement “Compatible with Refine Protocol 1.0” has additional
+conditions: each advertised release must pass the conformance suite and make
+the source-flow, Report destination/data, explicit Report gesture, and client
+telemetry/retention disclosures. See the protocol package's
+[support profile](https://github.com/runjuu/refine-protocol/blob/main/SUPPORT.md)
+and
+[compatibility-claim conditions](https://github.com/runjuu/refine-protocol/blob/main/COMPATIBILITY-CLAIMS.md).
+
 Refine for Obsidian is available under the [MIT License](LICENSE).
 
 ## Development
@@ -157,9 +191,26 @@ npm test
 npm run build
 ```
 
+To run the protocol package's eight live AF_UNIX conformance scenarios against
+the production transport/runtime seams, point the opt-in conformance command at
+a local `refine-protocol` checkout:
+
+```sh
+REFINE_PROTOCOL_ROOT=/path/to/refine-protocol npm run test:conformance
+```
+
+This external-repository gate is intentionally separate from `npm test`; the
+normal test suite does not require a protocol checkout.
+
 For local testing, copy `manifest.json`, `main.js`, and `styles.css` into
 `.obsidian/plugins/refine/` in a test vault, then reload Obsidian and enable
 **Refine** under Community plugins.
 
 The integration boundaries and safe-Apply semantics are documented in
 [ADR 0012: Host-Native Writing-Check Integration Interface](https://github.com/runjuu/grammar/blob/main/docs/adr/0012-host-native-writing-check-integration-interface.md).
+The supported public wire is
+[Refine Integration Protocol 1.0](https://github.com/runjuu/refine-protocol).
+It is an exact-version, local macOS client-to-Refine interface. Endpoint
+permissions, peer-UID checks, and a per-launch token exclude other OS users and
+nonlocal peers; self-reported client labels do not authenticate one process
+from another process already running as the same user.

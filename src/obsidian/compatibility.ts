@@ -1,17 +1,19 @@
-import type { RequiredCompatibilityUpdate } from "../transport/refine-transport";
+import type { ProtocolVersion } from "../transport/refine-transport";
 
 export function incompatibleProtocolNotice(
-  requiredUpdate: RequiredCompatibilityUpdate,
+  clientProtocol: ProtocolVersion,
+  serverProtocol: ProtocolVersion,
 ): string {
-  return requiredUpdate === "server"
-    ? "This version of the Refine Obsidian plugin requires a newer version of the Refine app. Update Refine and try again."
-    : "The installed version of the Refine app requires a newer version of the Refine Obsidian plugin. Update the plugin and try again.";
+  return `This Refine Obsidian plugin requires Integration Protocol ${formatProtocol(clientProtocol)}, but the Refine app reports Integration Protocol ${formatProtocol(serverProtocol)}. Install compatible Refine and plugin versions, then try again.`;
 }
 
 export function incompatibleProtocolStatus(
-  requiredUpdate: RequiredCompatibilityUpdate,
+  clientProtocol: ProtocolVersion,
+  serverProtocol: ProtocolVersion,
 ): string {
-  return requiredUpdate === "server"
-    ? "Refine: Update the Refine app to continue. Open Refine menu"
-    : "Refine: Update the Refine Obsidian plugin to continue. Open Refine menu";
+  return `Refine: Protocol ${formatProtocol(clientProtocol)} required; app reports ${formatProtocol(serverProtocol)}. Open Refine menu`;
+}
+
+function formatProtocol(protocol: ProtocolVersion): string {
+  return `${protocol.major}.${protocol.minor}`;
 }

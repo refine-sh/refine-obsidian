@@ -7,7 +7,7 @@ import type {
 } from "../integration/types";
 import {
   IncompatibleProtocolError,
-  type RequiredCompatibilityUpdate,
+  type ProtocolVersion,
 } from "../transport/refine-transport";
 import { ObsidianWritingHost } from "./host";
 import type { ExplanationRenderer } from "./presentation";
@@ -23,7 +23,8 @@ export type ObsidianSessionState =
   | {
       readonly type: "failed";
       readonly reason: "incompatibleProtocol";
-      readonly requiredUpdate: RequiredCompatibilityUpdate;
+      readonly clientProtocol: ProtocolVersion;
+      readonly serverProtocol: ProtocolVersion;
     };
 
 export interface ObsidianSessionManagerOptions {
@@ -93,7 +94,8 @@ export class ObsidianSessionManager {
               ? {
                   type: "failed",
                   reason: "incompatibleProtocol",
-                  requiredUpdate: error.requiredUpdate,
+                  clientProtocol: error.clientProtocol,
+                  serverProtocol: error.serverProtocol,
                 }
               : { type: "failed", reason: "unavailable" },
           );
