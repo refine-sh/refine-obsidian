@@ -8,6 +8,8 @@ export type RefineStatusBarState = (
   | { readonly type: "noEditor" }
   | { readonly type: "idle" }
   | { readonly type: "connecting" }
+  | { readonly type: "refreshing" }
+  | { readonly type: "changesNotChecked" }
   | { readonly type: "disconnected" }
   | {
       readonly type: "checking";
@@ -47,18 +49,26 @@ export function statusMenuShowsManualCheck(
   state: RefineStatusBarState,
 ): boolean {
   return statusMenuShowsCheckControls(state) &&
-    state.automaticChecksEnabled === false;
+    (
+      state.type === "refreshing" ||
+      state.automaticChecksEnabled === false
+    );
 }
 
 export function statusMenuShowsAutomaticCheckNotice(
   state: RefineStatusBarState,
 ): boolean {
   return statusMenuShowsCheckControls(state) &&
+    !statusMenuShowsManualCheck(state) &&
     state.automaticChecksEnabled !== false;
 }
 
 const NO_EDITOR_LABEL = "Refine: No editable Markdown note. Open Refine menu";
 const IDLE_LABEL = "Refine: Ready. Open Refine menu";
+const REFRESHING_LABEL =
+  "Refine: Waiting to check current note. Open Refine menu";
+const CHANGES_NOT_CHECKED_LABEL =
+  "Refine: Changes not checked. Open Refine menu";
 const CHECKING_LABEL = "Refine: Checking current note. Open Refine menu";
 
 export function createRefineStatusBarController(
@@ -101,6 +111,23 @@ export function createRefineStatusBarController(
           "Refine: Connecting. Open Refine menu",
           "loader-circle",
           true,
+        );
+      } else if (state.type === "refreshing") {
+        renderState(
+          element,
+          renderIcon,
+          "refreshing",
+          REFRESHING_LABEL,
+          "loader-circle",
+          true,
+        );
+      } else if (state.type === "changesNotChecked") {
+        renderState(
+          element,
+          renderIcon,
+          "changesNotChecked",
+          CHANGES_NOT_CHECKED_LABEL,
+          REFINE_MENU_BAR_ICON_ID,
         );
       } else if (state.type === "disconnected") {
         renderState(
@@ -208,7 +235,9 @@ export function statusBarStateForSession(
   const automaticChecksEnabled = snapshot.interaction.automaticChecksEnabled;
   switch (snapshot.state.type) {
     case "pending":
-      return { type: "idle", automaticChecksEnabled };
+      return automaticChecksEnabled
+        ? { type: "refreshing", automaticChecksEnabled }
+        : { type: "changesNotChecked", automaticChecksEnabled };
     case "checking":
       return snapshot.state.progress === undefined
         ? {

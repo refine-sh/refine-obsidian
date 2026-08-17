@@ -42,6 +42,15 @@ describe("Refine status bar", () => {
     })).toBe(false);
   });
 
+  it("offers a manual writing check while an automatic check is pending", () => {
+    const state = statusBarStateForSession(
+      presented({ type: "pending" }, 0, true),
+    );
+
+    expect(statusMenuShowsManualCheck(state)).toBe(true);
+    expect(statusMenuShowsAutomaticCheckNotice(state)).toBe(false);
+  });
+
   it("hides the automatic-check notice when the manual check is shown", () => {
     expect(statusMenuShowsAutomaticCheckNotice({
       type: "idle",
@@ -137,6 +146,56 @@ describe("Refine status bar", () => {
     expect(element.getAttribute("aria-label")).toBe(label);
     expect(element.hasAttribute("aria-busy")).toBe(false);
     expect(renderIcon).toHaveBeenLastCalledWith(element, REFINE_MENU_BAR_ICON_ID);
+  });
+
+  it("shows that Refine is waiting for an automatic writing check", () => {
+    const element = document.createElement("div");
+    const renderIcon = vi.fn();
+    const controller = createRefineStatusBarController({
+      element,
+      renderIcon,
+      onActivate: vi.fn(),
+    });
+    const state = statusBarStateForSession(
+      presented({ type: "pending" }, 0, true),
+    );
+
+    controller.setState(state);
+
+    expect(state).toEqual({
+      type: "refreshing",
+      automaticChecksEnabled: true,
+    });
+    expect(element.dataset.refineState).toBe("refreshing");
+    expect(element.getAttribute("aria-label")).toBe(
+      "Refine: Waiting to check current note. Open Refine menu",
+    );
+    expect(element.getAttribute("aria-busy")).toBe("true");
+    expect(renderIcon).toHaveBeenLastCalledWith(element, "loader-circle");
+  });
+
+  it("shows when current changes will not be checked automatically", () => {
+    const element = document.createElement("div");
+    const controller = createRefineStatusBarController({
+      element,
+      renderIcon: vi.fn(),
+      onActivate: vi.fn(),
+    });
+    const state = statusBarStateForSession(
+      presented({ type: "pending" }, 0, false),
+    );
+
+    controller.setState(state);
+
+    expect(state).toEqual({
+      type: "changesNotChecked",
+      automaticChecksEnabled: false,
+    });
+    expect(element.dataset.refineState).toBe("changesNotChecked");
+    expect(element.getAttribute("aria-label")).toBe(
+      "Refine: Changes not checked. Open Refine menu",
+    );
+    expect(element.hasAttribute("aria-busy")).toBe(false);
   });
 
   it("returns to no-editor status when the editable note closes", () => {
@@ -395,7 +454,7 @@ describe("Refine status bar", () => {
     ],
     [
       presented({ type: "pending" }, 0, false),
-      { type: "idle", automaticChecksEnabled: false } as const,
+      { type: "changesNotChecked", automaticChecksEnabled: false } as const,
     ],
     [
       presented({ type: "checking" }),

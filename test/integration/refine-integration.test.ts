@@ -1388,6 +1388,410 @@ describe("RefineIntegration", () => {
     await run;
   });
 
+  it("reconnects when Refine does not acknowledge the current document", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeHost(snapshot("doc:0", "current"));
+      const engine = new ReconnectingEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        reconnectDelayMs: 0,
+        documentAcknowledgmentTimeoutMs: 100,
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await vi.waitFor(() =>
+        expect(engine.sessions[0]?.commands[0]?.command).toEqual({
+          type: "openDocument",
+          snapshot: snapshot("doc:0", "current"),
+        }),
+      );
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await settleMicrotasksUntil(() => engine.sessions.length === 2);
+      expect(engine.sessions[1]?.commands[0]?.command).toEqual({
+        type: "openDocument",
+        snapshot: snapshot("doc:0", "current"),
+      });
+      const reopened = engine.sessions[1]?.commands[0];
+      if (!reopened) {
+        throw new Error("expected reconnect openDocument command");
+      }
+      engine.sessions[1]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: reopened.id,
+        event: { type: "documentAccepted", revision: "doc:0" },
+      });
+
+      controller.abort();
+      host.observations.close();
+      engine.sessions[1]?.events.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the document acknowledgment deadline after transport enqueue", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeHost(snapshot("doc:0", "current"));
+      const engine = new FakeEngine();
+      const releaseOpen = engine.blockNextSend("openDocument");
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        documentAcknowledgmentTimeoutMs: 100,
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await settleMicrotasksUntil(() => engine.commands.length === 1);
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(engine.closes).toBe(0);
+
+      releaseOpen();
+      await vi.advanceTimersByTimeAsync(0);
+      const opened = engine.commands[0];
+      if (!opened) {
+        throw new Error("expected openDocument command");
+      }
+      engine.emit(
+        { type: "documentAccepted", revision: "doc:0" },
+        opened.id,
+      );
+      await settleMicrotasksUntil(() => engine.eventsRead > 0);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(engine.closes).toBe(0);
+
+      controller.abort();
+      host.observations.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not arm a deadline when document acceptance arrives before the send receipt", async () => {
+    vi.useFakeTimers();
+    try {
+      const diagnostics: unknown[] = [];
+      const host = new FakeHost(snapshot("doc:0", "first"));
+      const engine = new FakeEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        documentAcknowledgmentTimeoutMs: 100,
+        onDocumentAcknowledgment: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await settleMicrotasksUntil(() => engine.commands.length === 1);
+      const opened = engine.commands[0];
+      if (!opened) {
+        throw new Error("expected openDocument command");
+      }
+      engine.emit(
+        { type: "documentAccepted", revision: "doc:0" },
+        opened.id,
+      );
+      await settleMicrotasksUntil(() => engine.eventsRead === 1);
+
+      const releaseReplacement = engine.blockNextSend("replaceDocument");
+      const latest = snapshot("doc:1", "second");
+      host.currentSnapshot = latest;
+      host.observations.push({ type: "snapshot", snapshot: latest });
+      await settleMicrotasksUntil(() => engine.commands.length === 2);
+      const replacement = engine.commands[1];
+      if (!replacement) {
+        throw new Error("expected replaceDocument command");
+      }
+      engine.emit(
+        { type: "documentAccepted", revision: "doc:1" },
+        replacement.id,
+      );
+      await settleMicrotasksUntil(() => engine.eventsRead === 2);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(engine.closes).toBe(0);
+
+      releaseReplacement();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(engine.closes).toBe(0);
+      expect(diagnostics).toEqual([
+        { state: "waiting", command: "openDocument", timeoutMs: 100 },
+        { state: "accepted", command: "openDocument", timeoutMs: 100 },
+        { state: "accepted", command: "replaceDocument", timeoutMs: 100 },
+      ]);
+
+      controller.abort();
+      host.observations.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not accept a superseded command acknowledgment for a replacement", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeHost(snapshot("doc:0", "first"));
+      const engine = new ReconnectingEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        reconnectDelayMs: 0,
+        documentAcknowledgmentTimeoutMs: 100,
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await vi.waitFor(() => expect(engine.sessions[0]?.commands).toHaveLength(1));
+      const opened = engine.sessions[0]?.commands[0];
+      if (!opened) {
+        throw new Error("expected openDocument command");
+      }
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: opened.id,
+        event: { type: "documentAccepted", revision: "doc:0" },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const latest = snapshot("doc:1", "second");
+      host.currentSnapshot = latest;
+      host.observations.push({ type: "snapshot", snapshot: latest });
+      await vi.waitFor(() =>
+        expect(engine.sessions[0]?.commands[1]?.command).toEqual({
+          type: "replaceDocument",
+          snapshot: latest,
+        }),
+      );
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 2,
+        epoch: "epoch-1",
+        causeCommandId: opened.id,
+        event: { type: "documentAccepted", revision: "doc:1" },
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await settleMicrotasksUntil(() => engine.sessions.length === 2);
+      expect(engine.sessions[1]?.commands[0]?.command).toEqual({
+        type: "openDocument",
+        snapshot: latest,
+      });
+      const reopened = engine.sessions[1]?.commands[0];
+      if (!reopened) {
+        throw new Error("expected reconnect openDocument command");
+      }
+      engine.sessions[1]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: reopened.id,
+        event: { type: "documentAccepted", revision: "doc:1" },
+      });
+
+      controller.abort();
+      host.observations.close();
+      engine.sessions[1]?.events.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a superseded document deadline close the current revision", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeHost(snapshot("doc:0", "first"));
+      const engine = new ReconnectingEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        reconnectDelayMs: 0,
+        documentAcknowledgmentTimeoutMs: 100,
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await settleMicrotasksUntil(() =>
+        engine.sessions[0]?.commands.length === 1
+      );
+
+      await vi.advanceTimersByTimeAsync(50);
+      const latest = snapshot("doc:1", "second");
+      host.currentSnapshot = latest;
+      host.observations.push({ type: "snapshot", snapshot: latest });
+      await settleMicrotasksUntil(() =>
+        engine.sessions[0]?.commands.length === 2
+      );
+      const replacement = engine.sessions[0]?.commands[1];
+      if (!replacement) {
+        throw new Error("expected replaceDocument command");
+      }
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(engine.sessions).toHaveLength(1);
+
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: replacement.id,
+        event: { type: "documentAccepted", revision: "doc:1" },
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(engine.sessions).toHaveLength(1);
+
+      controller.abort();
+      host.observations.close();
+      engine.sessions[0]?.events.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply the document acknowledgment deadline to a long writing check", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeHost(snapshot("doc:0", "current"));
+      const engine = new ReconnectingEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        reconnectDelayMs: 0,
+        documentAcknowledgmentTimeoutMs: 100,
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await settleMicrotasksUntil(() =>
+        engine.sessions[0]?.commands.length === 1
+      );
+      const opened = engine.sessions[0]?.commands[0];
+      if (!opened) {
+        throw new Error("expected openDocument command");
+      }
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: opened.id,
+        event: { type: "documentAccepted", revision: "doc:0" },
+      });
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 2,
+        epoch: "epoch-1",
+        event: checkingLifecyclePresentation("long-check", {
+          completedUnitCount: 1,
+          totalUnitCount: 2,
+        }),
+      });
+      await settleMicrotasksUntil(() =>
+        host.currentPresentation?.state.type === "checking"
+      );
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(engine.sessions).toHaveLength(1);
+      expect(host.currentPresentation?.state).toEqual({
+        type: "checking",
+        progress: { completedUnitCount: 1, totalUnitCount: 2 },
+      });
+
+      controller.abort();
+      host.observations.close();
+      engine.sessions[0]?.events.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports document acknowledgment recovery without source details", async () => {
+    vi.useFakeTimers();
+    try {
+      const diagnostics: unknown[] = [];
+      const host = new FakeHost(snapshot("private-revision", "PRIVATE SOURCE"));
+      const engine = new ReconnectingEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        reconnectDelayMs: 0,
+        documentAcknowledgmentTimeoutMs: 100,
+        onDocumentAcknowledgment: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await vi.waitFor(() => expect(engine.sessions[0]?.commands).toHaveLength(1));
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await settleMicrotasksUntil(() => engine.sessions.length === 2);
+      const reopened = engine.sessions[1]?.commands[0];
+      if (!reopened) {
+        throw new Error("expected reconnect openDocument command");
+      }
+      engine.sessions[1]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: reopened.id,
+        event: {
+          type: "documentAccepted",
+          revision: "private-revision",
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(diagnostics).toEqual([
+        {
+          state: "waiting",
+          command: "openDocument",
+          timeoutMs: 100,
+        },
+        {
+          state: "timedOut",
+          command: "openDocument",
+          timeoutMs: 100,
+        },
+        {
+          state: "waiting",
+          command: "openDocument",
+          timeoutMs: 100,
+        },
+        {
+          state: "accepted",
+          command: "openDocument",
+          timeoutMs: 100,
+        },
+      ]);
+      expect(JSON.stringify(diagnostics)).not.toContain("private-revision");
+      expect(JSON.stringify(diagnostics)).not.toContain("PRIVATE SOURCE");
+
+      controller.abort();
+      host.observations.close();
+      engine.sessions[1]?.events.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, 60_001, Number.NaN, Number.POSITIVE_INFINITY, 1.5])(
+    "rejects an out-of-bounds document acknowledgment deadline of %s",
+    (documentAcknowledgmentTimeoutMs) => {
+      expect(() =>
+        createRefineIntegration({
+          enginePort: new FakeEngine(),
+          documentAcknowledgmentTimeoutMs,
+        })
+      ).toThrow("documentAcknowledgmentTimeoutMs");
+    },
+  );
+
   it("keeps an automatic check live when an older resumed server replays it under a fresh check ID", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     const engine = new ReconnectingEngine();
@@ -3779,6 +4183,7 @@ class FakeEngine {
   readonly commands: { command: ClientCommand; id: string }[] = [];
   readonly eventQueue = new AsyncQueue<ServerEventEnvelope>();
   eventsRead = 0;
+  closes = 0;
   private commandSequence = 0;
   private eventSequence = 0;
   private blockedSend:
@@ -3819,7 +4224,10 @@ class FakeEngine {
         return { sequence: this.commandSequence, id };
       },
       events: () => this.readEvents(),
-      close: async () => this.eventQueue.close(),
+      close: async () => {
+        this.closes += 1;
+        this.eventQueue.close();
+      },
     });
   }
 
@@ -3850,6 +4258,16 @@ function snapshot(revision: string, text: string): DocumentSnapshot {
     revision,
     sources: [{ sourceId: "document", text, sourceSyntax: "plainText" }],
   };
+}
+
+async function settleMicrotasksUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error("condition did not settle through queued microtasks");
 }
 
 function suggestionPresentation(

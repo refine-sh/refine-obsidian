@@ -149,6 +149,54 @@ describe("Obsidian presentation", () => {
     )).toBeNull();
   });
 
+  it("visually distinguishes provisional paint without fading note text", () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    try {
+      const rules = Array.from(style.sheet?.cssRules ?? [])
+        .filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+      const provisionalUnderlineRule = rules.find((rule) =>
+        rule.selectorText.includes(
+          ".refine-suggestion--provisional.refine-suggestion--underline::after",
+        ) &&
+        rule.selectorText.includes(
+          ".refine-suggestion--provisional.refine-suggestion--dashedUnderline::after",
+        )
+      );
+      const liveHighlightRule = rules.find((rule) =>
+        rule.selectorText === ".refine-suggestion--highlight"
+      );
+      const provisionalHighlightRule = rules.find((rule) =>
+        rule.selectorText ===
+          ".refine-suggestion--provisional.refine-suggestion--highlight"
+      );
+      const provisionalAnchorRule = rules.find((rule) =>
+        rule.selectorText === ".refine-insertion-anchor--provisional"
+      );
+
+      expect(provisionalUnderlineRule?.style.opacity).toBe("0.5");
+      expect(provisionalHighlightRule?.style.background).not.toBe("");
+      expect(provisionalHighlightRule?.style.background).not.toBe(
+        liveHighlightRule?.style.background,
+      );
+      expect(provisionalAnchorRule?.style.opacity).toBe("0.5");
+      expect(
+        rules
+          .filter((rule) =>
+            rule.selectorText.includes(".refine-suggestion--provisional") &&
+            !rule.selectorText.includes("::")
+          )
+          .every((rule) => rule.style.opacity === ""),
+      ).toBe(true);
+    } finally {
+      style.remove();
+    }
+  });
+
   it("keeps live suggestion actions after a same-text replacement", async () => {
     const { host, view } = createHost(
       "bad first. bad second.",
@@ -330,6 +378,41 @@ describe("Obsidian presentation", () => {
       )).toBeNull();
     },
   );
+
+  it("clears provisional decorations when automatic checking is unavailable", async () => {
+    const { host, view } = createHost(
+      "bad first. bad second.",
+      "provisional-manual",
+    );
+    await host.present(
+      separatedSuggestionPresentation("provisional-manual:0"),
+      actions(),
+    );
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    expect(document.querySelectorAll(
+      ".refine-suggestion, .refine-insertion-anchor",
+    )).toHaveLength(3);
+    const pending = lifecyclePresentation(
+      "provisional-manual:1",
+      2,
+      { type: "pending" },
+    );
+
+    await host.present(
+      {
+        ...pending,
+        interaction: {
+          ...pending.interaction,
+          automaticChecksEnabled: false,
+        },
+      },
+      actions(),
+    );
+
+    expect(document.querySelector(
+      ".refine-suggestion, .refine-insertion-anchor",
+    )).toBeNull();
+  });
 
   it("ignores a stale presentation while provisional decorations await the current revision", async () => {
     const { host, view } = createHost(

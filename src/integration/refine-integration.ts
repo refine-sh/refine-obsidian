@@ -41,9 +41,40 @@ export interface WritingCheckEnginePort {
 export interface RefineIntegrationOptions {
   readonly enginePort: WritingCheckEnginePort;
   readonly reconnectDelayMs?: number;
+  /**
+   * Maximum time to wait for Refine to accept an open or replacement document
+   * after transport enqueue. Defaults to five seconds and must be an integer
+   * from 1 through 60,000 milliseconds.
+   */
+  readonly documentAcknowledgmentTimeoutMs?: number;
+  /** Receives source-redacted document acceptance lifecycle diagnostics. */
+  readonly onDocumentAcknowledgment?: (
+    diagnostic: RefineDocumentAcknowledgmentDiagnostic,
+  ) => void;
 }
 
+export interface RefineDocumentAcknowledgmentDiagnostic {
+  readonly state: "waiting" | "accepted" | "timedOut";
+  readonly command: "openDocument" | "replaceDocument";
+  readonly timeoutMs: number;
+}
+
+const DEFAULT_DOCUMENT_ACKNOWLEDGMENT_TIMEOUT_MS = 5_000;
+const MAX_DOCUMENT_ACKNOWLEDGMENT_TIMEOUT_MS = 60_000;
+
 export function createRefineIntegration(options: RefineIntegrationOptions): RefineIntegration {
+  const documentAcknowledgmentTimeoutMs =
+    options.documentAcknowledgmentTimeoutMs ??
+    DEFAULT_DOCUMENT_ACKNOWLEDGMENT_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(documentAcknowledgmentTimeoutMs) ||
+    documentAcknowledgmentTimeoutMs < 1 ||
+    documentAcknowledgmentTimeoutMs > MAX_DOCUMENT_ACKNOWLEDGMENT_TIMEOUT_MS
+  ) {
+    throw new RangeError(
+      "documentAcknowledgmentTimeoutMs must be an integer from 1 through 60000",
+    );
+  }
   return {
     run: async ({ host, signal }) => {
       const run = new IntegrationRun(
@@ -51,6 +82,8 @@ export function createRefineIntegration(options: RefineIntegrationOptions): Refi
         options.enginePort,
         signal,
         options.reconnectDelayMs ?? 1_000,
+        documentAcknowledgmentTimeoutMs,
+        options.onDocumentAcknowledgment,
       );
       await run.start();
     },
@@ -66,6 +99,15 @@ interface PendingAction {
   readonly result: Deferred<ActionOutcome>;
   readonly explanation?: AsyncQueue<ExplanationUpdate>;
   transactionId?: string;
+}
+
+interface PendingDocumentAcknowledgment {
+  readonly session: RefineTransportSession;
+  readonly commandId: string;
+  readonly documentRevision: string;
+  readonly command: "openDocument" | "replaceDocument";
+  acceptedBeforeReceipt: boolean;
+  timeout?: ReturnType<typeof setTimeout>;
 }
 
 interface HostObservationCycle {
@@ -170,12 +212,19 @@ class IntegrationRun {
   private observationCycle: HostObservationCycle | undefined;
   private observationRestart: Deferred<void> | undefined;
   private closeDocumentSent = false;
+  private pendingDocumentAcknowledgment:
+    | PendingDocumentAcknowledgment
+    | undefined;
 
   constructor(
     private readonly host: WritingHost,
     private readonly enginePort: WritingCheckEnginePort,
     signal: AbortSignal,
     private readonly reconnectDelayMs: number,
+    private readonly documentAcknowledgmentTimeoutMs: number,
+    private readonly onDocumentAcknowledgment:
+      | ((diagnostic: RefineDocumentAcknowledgmentDiagnostic) => void)
+      | undefined,
   ) {
     if (signal.aborted) {
       this.lifecycle.abort(signal.reason);
@@ -250,6 +299,7 @@ class IntegrationRun {
             this.lifecycle.abort(error);
           }
         } finally {
+          this.cancelDocumentAcknowledgmentForSession(connected);
           if (this.session === connected) {
             if (this.lifecycle.signal.aborted) {
               await this.closeCurrentDocument();
@@ -902,8 +952,24 @@ class IntegrationRun {
       this.queuedSnapshotDuringApply = snapshot;
       return;
     }
-    if (this.session && this.opened) {
-      await this.send({ type: "replaceDocument", snapshot });
+    const session = this.session;
+    if (session && this.opened) {
+      const commandId = globalThis.crypto.randomUUID();
+      this.trackDocumentAcknowledgment(
+        session,
+        commandId,
+        snapshot.revision,
+        "replaceDocument",
+      );
+      const sent = await this.send(
+        { type: "replaceDocument", snapshot },
+        commandId,
+      );
+      if (!sent) {
+        this.cancelDocumentAcknowledgment(commandId);
+      } else {
+        this.startDocumentAcknowledgmentDeadline(commandId);
+      }
     }
   }
 
@@ -970,14 +1036,22 @@ class IntegrationRun {
             checkId: retainedCheckId,
           }
         : undefined;
+    this.trackDocumentAcknowledgment(
+      this.session,
+      openCommandId,
+      documentRevision,
+      "openDocument",
+    );
     const opened = await this.send(
       { type: "openDocument", snapshot: this.latestSnapshot },
       openCommandId,
     );
     if (!opened) {
+      this.cancelDocumentAcknowledgment(openCommandId);
       this.presentationReplayAlias = undefined;
       throw new Error("Unable to open document on Refine engine connection");
     }
+    this.startDocumentAcknowledgmentDeadline(openCommandId);
     this.opened = true;
     await this.sendLatestAttention();
     await this.sendPendingCheck();
@@ -1034,6 +1108,10 @@ class IntegrationRun {
     const event = envelope.event;
     switch (event.type) {
       case "documentAccepted":
+        this.acceptDocumentAcknowledgment(
+          envelope.causeCommandId,
+          event.revision,
+        );
         return;
       case "resyncRequired":
         if (event.reason === "documentNotOpen") {
@@ -1720,6 +1798,7 @@ class IntegrationRun {
   }
 
   private async finish(failure: unknown): Promise<void> {
+    this.cancelDocumentAcknowledgment();
     if (this.session) {
       await this.closeCurrentDocument();
       await this.session.close().catch(() => undefined);
@@ -1878,6 +1957,108 @@ class IntegrationRun {
     }
     this.closeDocumentSent = true;
     await session.send({ type: "closeDocument" }).catch(() => undefined);
+  }
+
+  private trackDocumentAcknowledgment(
+    session: RefineTransportSession,
+    commandId: string,
+    documentRevision: string,
+    command: "openDocument" | "replaceDocument",
+  ): void {
+    this.cancelDocumentAcknowledgment();
+    const pending: PendingDocumentAcknowledgment = {
+      session,
+      commandId,
+      documentRevision,
+      command,
+      acceptedBeforeReceipt: false,
+    };
+    this.pendingDocumentAcknowledgment = pending;
+  }
+
+  private startDocumentAcknowledgmentDeadline(commandId: string): void {
+    const pending = this.pendingDocumentAcknowledgment;
+    if (
+      !pending ||
+      pending.commandId !== commandId ||
+      this.session !== pending.session ||
+      this.lifecycle.signal.aborted
+    ) {
+      return;
+    }
+    if (pending.acceptedBeforeReceipt) {
+      this.diagnoseDocumentAcknowledgment("accepted", pending.command);
+      this.cancelDocumentAcknowledgment(commandId);
+      return;
+    }
+    const { session, command } = pending;
+    pending.timeout = setTimeout(() => {
+      if (
+        this.pendingDocumentAcknowledgment !== pending ||
+        this.session !== session ||
+        this.lifecycle.signal.aborted
+      ) {
+        return;
+      }
+      this.pendingDocumentAcknowledgment = undefined;
+      this.diagnoseDocumentAcknowledgment("timedOut", command);
+      void session.close().catch(() => undefined);
+    }, this.documentAcknowledgmentTimeoutMs);
+    this.diagnoseDocumentAcknowledgment("waiting", command);
+  }
+
+  private acceptDocumentAcknowledgment(
+    commandId: string | undefined,
+    documentRevision: string,
+  ): void {
+    const pending = this.pendingDocumentAcknowledgment;
+    if (
+      !pending ||
+      pending.commandId !== commandId ||
+      pending.documentRevision !== documentRevision
+    ) {
+      return;
+    }
+    if (pending.timeout === undefined) {
+      pending.acceptedBeforeReceipt = true;
+      return;
+    }
+    this.diagnoseDocumentAcknowledgment("accepted", pending.command);
+    this.cancelDocumentAcknowledgment();
+  }
+
+  private diagnoseDocumentAcknowledgment(
+    state: RefineDocumentAcknowledgmentDiagnostic["state"],
+    command: RefineDocumentAcknowledgmentDiagnostic["command"],
+  ): void {
+    try {
+      this.onDocumentAcknowledgment?.({
+        state,
+        command,
+        timeoutMs: this.documentAcknowledgmentTimeoutMs,
+      });
+    } catch {
+      // Diagnostics never participate in integration lifecycle correctness.
+    }
+  }
+
+  private cancelDocumentAcknowledgment(commandId?: string): void {
+    const pending = this.pendingDocumentAcknowledgment;
+    if (!pending || (commandId !== undefined && pending.commandId !== commandId)) {
+      return;
+    }
+    if (pending.timeout !== undefined) {
+      clearTimeout(pending.timeout);
+    }
+    this.pendingDocumentAcknowledgment = undefined;
+  }
+
+  private cancelDocumentAcknowledgmentForSession(
+    session: RefineTransportSession | undefined,
+  ): void {
+    if (this.pendingDocumentAcknowledgment?.session === session) {
+      this.cancelDocumentAcknowledgment();
+    }
   }
 
   private disablePendingActions(

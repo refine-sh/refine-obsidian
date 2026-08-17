@@ -147,12 +147,14 @@ const presentationField = StateField.define<PresentationState | undefined>({
     }
     for (const effect of transaction.effects) {
       if (effect.is(replacePresentation)) {
-        // Pending is lifecycle state only. Keep inert mapped pixels until the
-        // first authoritative presentation for the new revision arrives.
+        // Pending is lifecycle state only. While an automatic check is due,
+        // keep inert mapped pixels until its first authoritative presentation
+        // arrives. Manual-only pending has no promised replacement, so clear.
         next =
           effect.value !== undefined &&
           effect.value.snapshot.state.type === "pending" &&
           effect.value.snapshot.suggestions.length === 0 &&
+          effect.value.snapshot.interaction.automaticChecksEnabled &&
           next?.type === "provisional"
             ? next
             : effect.value === undefined

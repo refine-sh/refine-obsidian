@@ -40,6 +40,15 @@
   border-radius: 2px;
 }
 
+.refine-suggestion--provisional.refine-suggestion--underline::after,
+.refine-suggestion--provisional.refine-suggestion--dashedUnderline::after {
+  opacity: 0.5;
+}
+
+.refine-suggestion--provisional.refine-suggestion--highlight {
+  background: color-mix(in srgb, var(--refine-suggestion-color) 8%, transparent);
+}
+
 .refine-suggestion--quick-apply-active {
   background: color-mix(in srgb, var(--refine-suggestion-color) 18%, transparent);
   border-radius: 2px;
@@ -69,6 +78,10 @@
   width: 0.35em;
   background: color-mix(in srgb, var(--refine-suggestion-color) 22%, transparent);
   border-radius: 2px;
+}
+
+.refine-insertion-anchor--provisional {
+  opacity: 0.5;
 }
 
 .refine-insertion-anchor--quick-apply-active {
