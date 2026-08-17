@@ -316,6 +316,7 @@
 .refine-status-bar[data-refine-state="disconnected"],
 .refine-status-bar[data-refine-state="error"],
 .refine-status-bar[data-refine-state="checkFailed"],
+.refine-status-bar[data-refine-state="incompatible"],
 .refine-status-bar[data-refine-state="partial"] {
   color: var(--text-error);
 }

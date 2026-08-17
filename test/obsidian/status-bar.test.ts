@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { PresentationSnapshot } from "../../src/integration/types";
@@ -92,6 +95,28 @@ describe("Refine status bar", () => {
     });
 
     expect([...element.classList]).toEqual(["status-bar-item", "refine-status-bar"]);
+  });
+
+  it("uses Obsidian's error color for incompatible versions", () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    try {
+      const incompatibleRule = Array.from(style.sheet?.cssRules ?? []).find(
+        (rule) =>
+          "selectorText" in rule &&
+          (rule as CSSStyleRule).selectorText.includes(
+            '.refine-status-bar[data-refine-state="incompatible"]',
+          ),
+      ) as CSSStyleRule | undefined;
+
+      expect(incompatibleRule?.style.color).toBe("var(--text-error)");
+    } finally {
+      style.remove();
+    }
   });
 
   it("communicates when Refine is idle and ready", () => {
