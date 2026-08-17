@@ -110,6 +110,11 @@ interface PendingDocumentAcknowledgment {
   timeout?: ReturnType<typeof setTimeout>;
 }
 
+type DocumentCommand = Extract<
+  ClientCommand,
+  { readonly type: "openDocument" | "replaceDocument" }
+>;
+
 interface HostObservationCycle {
   readonly controller: AbortController;
   readonly iterator: AsyncIterator<HostObservation>;
@@ -952,24 +957,12 @@ class IntegrationRun {
       this.queuedSnapshotDuringApply = snapshot;
       return;
     }
-    const session = this.session;
-    if (session && this.opened) {
+    if (this.session && this.opened) {
       const commandId = globalThis.crypto.randomUUID();
-      this.trackDocumentAcknowledgment(
-        session,
-        commandId,
-        snapshot.revision,
-        "replaceDocument",
-      );
-      const sent = await this.send(
+      await this.sendDocumentCommand(
         { type: "replaceDocument", snapshot },
         commandId,
       );
-      if (!sent) {
-        this.cancelDocumentAcknowledgment(commandId);
-      } else {
-        this.startDocumentAcknowledgmentDeadline(commandId);
-      }
     }
   }
 
@@ -1036,22 +1029,14 @@ class IntegrationRun {
             checkId: retainedCheckId,
           }
         : undefined;
-    this.trackDocumentAcknowledgment(
-      this.session,
-      openCommandId,
-      documentRevision,
-      "openDocument",
-    );
-    const opened = await this.send(
+    const opened = await this.sendDocumentCommand(
       { type: "openDocument", snapshot: this.latestSnapshot },
       openCommandId,
     );
     if (!opened) {
-      this.cancelDocumentAcknowledgment(openCommandId);
       this.presentationReplayAlias = undefined;
       throw new Error("Unable to open document on Refine engine connection");
     }
-    this.startDocumentAcknowledgmentDeadline(openCommandId);
     this.opened = true;
     await this.sendLatestAttention();
     await this.sendPendingCheck();
@@ -1603,10 +1588,10 @@ class IntegrationRun {
             queued.revision !== submittedRevision &&
             queued.revision === this.latestSnapshot?.revision
           ) {
-            const receipt = await this.send({
-              type: "replaceDocument",
-              snapshot: queued,
-            });
+            const receipt = await this.sendDocumentCommand(
+              { type: "replaceDocument", snapshot: queued },
+              globalThis.crypto.randomUUID(),
+            );
             if (!receipt) {
               break;
             }
@@ -1948,6 +1933,29 @@ class IntegrationRun {
       }
       return undefined;
     }
+  }
+
+  private async sendDocumentCommand(
+    command: DocumentCommand,
+    commandId: string,
+  ): Promise<CommandReceipt | undefined> {
+    const session = this.session;
+    if (!session) {
+      return undefined;
+    }
+    this.trackDocumentAcknowledgment(
+      session,
+      commandId,
+      command.snapshot.revision,
+      command.type,
+    );
+    const receipt = await this.send(command, commandId);
+    if (!receipt) {
+      this.cancelDocumentAcknowledgment(commandId);
+      return undefined;
+    }
+    this.startDocumentAcknowledgmentDeadline(commandId);
+    return receipt;
   }
 
   private async closeCurrentDocument(): Promise<void> {

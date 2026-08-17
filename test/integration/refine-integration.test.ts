@@ -3189,6 +3189,142 @@ describe("RefineIntegration", () => {
     await run;
   });
 
+  it("reconnects with the latest snapshot when an Apply-queued replacement is not accepted", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new FakeHost(snapshot("doc:0", "create an link"));
+      let finishApply: ((outcome: HostApplyOutcome) => void) | undefined;
+      host.apply.mockImplementationOnce(
+        () => new Promise<HostApplyOutcome>((resolve) => {
+          finishApply = resolve;
+        }),
+      );
+      const engine = new ReconnectingEngine();
+      const integration = createRefineIntegration({
+        enginePort: engine,
+        reconnectDelayMs: 0,
+        documentAcknowledgmentTimeoutMs: 100,
+      });
+      const controller = new AbortController();
+      const run = integration.run({ host, signal: controller.signal });
+      await settleMicrotasksUntil(() =>
+        engine.sessions[0]?.commands.length === 1
+      );
+      const opened = engine.sessions[0]?.commands[0];
+      if (!opened) {
+        throw new Error("expected openDocument command");
+      }
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: opened.id,
+        event: { type: "documentAccepted", revision: "doc:0" },
+      });
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 2,
+        epoch: "epoch-1",
+        event: suggestionPresentation("check-1", "suggestion-1"),
+      });
+      await settleMicrotasksUntil(() =>
+        host.currentPresentation?.suggestions.length === 1
+      );
+
+      const apply = host.currentActions?.apply("suggestion-1");
+      if (!apply) {
+        throw new Error("expected Apply action");
+      }
+      await settleMicrotasksUntil(() =>
+        engine.sessions[0]?.commands.at(-1)?.command.type === "performAction"
+      );
+      const perform = engine.sessions[0]?.commands.at(-1)?.command;
+      if (!perform || perform.type !== "performAction") {
+        throw new Error("expected performAction command");
+      }
+      engine.sessions[0]?.events.push({
+        type: "event",
+        sequence: 3,
+        epoch: "epoch-1",
+        event: {
+          type: "applyRequested",
+          actionId: perform.actionId,
+          transactionId: "queued-replacement-transaction",
+          request: {
+            expectedRevision: "doc:0",
+            sourceId: "document",
+            edits: [
+              {
+                range: { location: 7, length: 2 },
+                expectedText: "an",
+                replacement: "a",
+              },
+            ],
+          },
+        },
+      });
+      await settleMicrotasksUntil(() => host.apply.mock.calls.length === 1);
+
+      const applied = snapshot("doc:1", "create a link");
+      const latest = snapshot("doc:2", "create a better link");
+      host.currentSnapshot = latest;
+      host.observations.push({ type: "snapshot", snapshot: latest });
+      await settleMicrotasksUntil(() =>
+        host.currentPresentation?.documentRevision === "doc:2"
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      finishApply?.({ status: "applied", snapshot: applied });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(engine.sessions[0]?.commands.map(({ command }) => command.type)).toEqual([
+        "openDocument",
+        "performAction",
+        "completeApply",
+        "replaceDocument",
+      ]);
+      expect(engine.sessions[0]?.commands.at(-1)?.command).toEqual({
+        type: "replaceDocument",
+        snapshot: latest,
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await settleMicrotasksUntil(() => engine.sessions.length === 2);
+      expect(engine.sessions[1]?.commands.map(({ command }) => command.type)).toEqual([
+        "completeApply",
+        "openDocument",
+      ]);
+      const reopened = engine.sessions[1]?.commands[1];
+      expect(reopened?.command).toEqual({
+        type: "openDocument",
+        snapshot: latest,
+      });
+      if (!reopened) {
+        throw new Error("expected latest snapshot to reopen");
+      }
+      engine.sessions[1]?.events.push({
+        type: "event",
+        sequence: 1,
+        epoch: "epoch-1",
+        causeCommandId: reopened.id,
+        event: { type: "documentAccepted", revision: "doc:2" },
+      });
+      engine.sessions[1]?.events.push({
+        type: "event",
+        sequence: 2,
+        epoch: "epoch-1",
+        event: { type: "actionCompleted", actionId: perform.actionId },
+      });
+      await expect(apply).resolves.toEqual({ status: "completed" });
+
+      controller.abort();
+      host.observations.close();
+      engine.sessions[1]?.events.close();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("receipts Apply readback before a later snapshot, its attention, and its check", async () => {
     const host = new FakeHost(snapshot("doc:0", "create an link"));
     let finishApply: ((outcome: HostApplyOutcome) => void) | undefined;
