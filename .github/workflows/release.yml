@@ -44,6 +44,9 @@ jobs:
             exit 1
           fi
 
+      - name: Lint the plugin source
+        run: npm run lint
+
       - name: Run the test suite
         run: npm test
 

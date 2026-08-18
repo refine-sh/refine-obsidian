@@ -13,5 +13,5 @@ Keep ownership at these boundaries:
 - `src/obsidian/` owns canonical Markdown capture, revision identity,
   decorations, suggestion cards, and one-transaction source mutation.
 
-Exercise public seams in tests. Before handoff, typechecking, the full test
-suite, and the production build must all pass.
+Exercise public seams in tests. Before handoff, linting, typechecking, the
+full test suite, and the production build must all pass.
