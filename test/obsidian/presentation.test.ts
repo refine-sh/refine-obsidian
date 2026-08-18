@@ -169,7 +169,7 @@ describe("Obsidian presentation", () => {
     expect(anchor?.hasAttribute("role")).toBe(false);
     expect(anchor?.hasAttribute("tabindex")).toBe(false);
     expect(anchor?.getAttribute("aria-hidden")).toBe("true");
-    expect(anchor?.style.pointerEvents).toBe("none");
+    expect(anchor?.classList).toContain("refine-insertion-anchor--provisional");
     expect(document.querySelector(".refine-tooltip")).toBeNull();
 
     provisional[0]?.dispatchEvent(
@@ -709,6 +709,35 @@ describe("Obsidian presentation", () => {
       expect(document.querySelector(".refine-tooltip")).toBeNull();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("keeps provisional anchors and unplaced surfaces inert from the stylesheet", () => {
+    const style = document.createElement("style");
+    style.textContent = readFileSync(
+      resolve(import.meta.dirname, "../../styles.css"),
+      "utf8",
+    );
+    document.head.append(style);
+    try {
+      const rules = Array.from(style.sheet?.cssRules ?? [])
+        .filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+      const rule = (selector: string): CSSStyleRule | undefined =>
+        rules.find((candidate) => candidate.selectorText.includes(selector));
+
+      expect(
+        rule(".refine-insertion-anchor--provisional")?.style.pointerEvents,
+      ).toBe("none");
+      expect(rule(".refine-tooltip--measuring")?.style.visibility).toBe("hidden");
+      expect(rule(".refine-quick-apply-tip--measuring")?.style.visibility).toBe(
+        "hidden",
+      );
+      expect(rule(".refine-tooltip--floating")?.style.top).toBe("0px");
+      expect(rule(".refine-tooltip--floating")?.style.left).toBe("0px");
+      expect(rule(".refine-quick-apply-tip")?.style.top).toBe("0px");
+      expect(rule(".refine-quick-apply-tip")?.style.left).toBe("0px");
+    } finally {
+      style.remove();
     }
   });
 

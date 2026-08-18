@@ -82,6 +82,7 @@
 
 .refine-insertion-anchor--provisional {
   opacity: 0.5;
+  pointer-events: none;
 }
 
 .refine-insertion-anchor--quick-apply-active {
@@ -93,6 +94,8 @@
 
 .refine-quick-apply-tip {
   position: fixed;
+  top: 0;
+  left: 0;
   z-index: var(--layer-popover);
   box-sizing: border-box;
   max-inline-size: min(18rem, calc(100vw - 2rem));
@@ -127,7 +130,15 @@
 
 .refine-tooltip--floating {
   position: fixed;
+  top: 0;
+  left: 0;
   z-index: var(--layer-popover);
+}
+
+/* Floating surfaces stay hidden until the first measurement places them. */
+.refine-tooltip--measuring,
+.refine-quick-apply-tip--measuring {
+  visibility: hidden;
 }
 
 .refine-tooltip__accessible-label {

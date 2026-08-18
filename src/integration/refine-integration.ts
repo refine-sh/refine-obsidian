@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto";
+
 import { isFatalEngineConnectionError } from "../transport/engine-connection-error";
 import { AsyncQueue } from "../shared/async-queue";
+import { toError } from "../shared/errors";
+import { clearTimer, setTimer, type TimerHandle } from "../shared/timers";
 import { unicodeScalarBoundaries } from "../shared/unicode-scalar-boundaries";
 import {
   HandshakeRejectedError,
@@ -109,7 +113,7 @@ interface PendingDocumentAcknowledgment {
   readonly documentRevision: string;
   readonly command: "openDocument" | "replaceDocument";
   acceptedBeforeReceipt: boolean;
-  timeout?: ReturnType<typeof setTimeout>;
+  timeout?: TimerHandle;
 }
 
 type DocumentCommand = Extract<
@@ -160,7 +164,7 @@ const MAX_BUFFERED_ENGINE_EVENTS = 128;
 const MAX_BUFFERED_HOST_OBSERVATIONS = 128;
 
 class IntegrationRun {
-  private runId = globalThis.crypto.randomUUID();
+  private runId = randomUUID();
   private readonly lifecycle = new AbortController();
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly actionByKey = new Map<string, Promise<ActionOutcome>>();
@@ -245,7 +249,7 @@ class IntegrationRun {
   async start(): Promise<void> {
     const observations = this.openHostObservation();
     this.observationCycle = observations;
-    let failure: unknown;
+    let failure: Error | undefined;
     let observationTask: Promise<void> | undefined;
     try {
       const first = await observations.iterator.next();
@@ -263,7 +267,7 @@ class IntegrationRun {
           this.lifecycle.abort();
         },
         (error: unknown) => {
-          failure = error;
+          failure = toError(error);
           this.lifecycle.abort(error);
         },
       );
@@ -292,11 +296,11 @@ class IntegrationRun {
             error instanceof HandshakeRejectedError &&
             error.recovery === "newRun"
           ) {
-            this.runId = globalThis.crypto.randomUUID();
+            this.runId = randomUUID();
             this.serverEpoch = undefined;
             await this.abandonLostCoordinatorState();
           } else if (isFatalConnectionError(error)) {
-            failure ??= error;
+            failure ??= toError(error);
             this.lifecycle.abort(error);
           }
         } finally {
@@ -321,10 +325,10 @@ class IntegrationRun {
         }
       }
       await observationTask.catch((error: unknown) => {
-        failure ??= error;
+        failure ??= toError(error);
       });
     } catch (error) {
-      failure = error;
+      failure = toError(error);
     } finally {
       this.lifecycle.abort(failure);
       this.observationCycle?.controller.abort(failure);
@@ -408,7 +412,7 @@ class IntegrationRun {
         buffered.push(next.value);
       }
     } catch (error) {
-      buffered.fail(error);
+      buffered.fail(toError(error));
     } finally {
       buffered.close();
     }
@@ -514,7 +518,7 @@ class IntegrationRun {
         bufferedEvents.push(envelope);
       }
     } catch (error) {
-      bufferedEvents.fail(error);
+      bufferedEvents.fail(toError(error));
     } finally {
       bufferedEvents.close();
     }
@@ -712,7 +716,7 @@ class IntegrationRun {
     }
     const terminalOwnerCheckId =
       event.checkId === resumableCheckId
-        ? `rematerialized-${globalThis.crypto.randomUUID()}`
+        ? `rematerialized-${randomUUID()}`
         : event.checkId;
     this.resumableCheckByRevision.set(event.content.documentRevision, {
       checkId: resumableCheckId,
@@ -954,7 +958,7 @@ class IntegrationRun {
       return;
     }
     if (this.session && this.opened) {
-      const commandId = globalThis.crypto.randomUUID();
+      const commandId = randomUUID();
       await this.sendDocumentCommand(
         { type: "replaceDocument", snapshot },
         commandId,
@@ -1003,7 +1007,7 @@ class IntegrationRun {
       }
     }
 
-    const openCommandId = globalThis.crypto.randomUUID();
+    const openCommandId = randomUUID();
     const documentRevision = this.latestSnapshot.revision;
     const resumableCheckId = this.resumableCheckByRevision.get(
       documentRevision,
@@ -1069,7 +1073,7 @@ class IntegrationRun {
     }
     const previousCheckId = pending.checkId;
     delete pending.checkId;
-    const commandId = globalThis.crypto.randomUUID();
+    const commandId = randomUUID();
     pending.commandId = commandId;
     const sent = await this.send(
       pending.intent === undefined
@@ -1291,7 +1295,7 @@ class IntegrationRun {
       return { status: "stale" };
     }
 
-    const id = globalThis.crypto.randomUUID();
+    const id = randomUUID();
     const result = new Deferred<ActionOutcome>();
     const pending: PendingAction = {
       id,
@@ -1306,7 +1310,7 @@ class IntegrationRun {
       await this.disableAction(presentation, suggestionId, kind);
     }
     const actionCommandId =
-      kind === "dismiss" ? globalThis.crypto.randomUUID() : undefined;
+      kind === "dismiss" ? randomUUID() : undefined;
     const presentationOwnerCheckId = this.currentCheckIdByRevision.get(
       presentation.documentRevision,
     );
@@ -1405,7 +1409,7 @@ class IntegrationRun {
         return;
       }
 
-      const id = globalThis.crypto.randomUUID();
+      const id = randomUUID();
       const pending: PendingAction = {
         id,
         key: `${presentation.presentationRevision}:${suggestionId}:explain`,
@@ -1586,7 +1590,7 @@ class IntegrationRun {
           ) {
             const receipt = await this.sendDocumentCommand(
               { type: "replaceDocument", snapshot: queued },
-              globalThis.crypto.randomUUID(),
+              randomUUID(),
             );
             if (!receipt) {
               break;
@@ -2013,7 +2017,7 @@ class IntegrationRun {
       return;
     }
     const { session, command } = pending;
-    pending.timeout = setTimeout(() => {
+    pending.timeout = setTimer(() => {
       if (
         this.pendingDocumentAcknowledgment !== pending ||
         this.session !== session ||
@@ -2068,9 +2072,7 @@ class IntegrationRun {
     if (!pending || (commandId !== undefined && pending.commandId !== commandId)) {
       return;
     }
-    if (pending.timeout !== undefined) {
-      clearTimeout(pending.timeout);
-    }
+    clearTimer(pending.timeout);
     this.pendingDocumentAcknowledgment = undefined;
   }
 
@@ -2178,7 +2180,7 @@ class ExplanationActionStream implements AsyncIterableIterator<ExplanationUpdate
   private ensureStarted(): Promise<void> {
     if (!this.startPromise) {
       this.startPromise = this.start(this).catch((error: unknown) => {
-        this.queue.fail(error);
+        this.queue.fail(toError(error));
       });
     }
     return this.startPromise;
@@ -2288,10 +2290,10 @@ function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void
     return Promise.resolve();
   }
   return new Promise<void>((resolve) => {
-    const timeout = setTimeout(finish, milliseconds);
+    const timeout = setTimer(finish, milliseconds);
     signal.addEventListener("abort", finish, { once: true });
     function finish(): void {
-      clearTimeout(timeout);
+      clearTimer(timeout);
       signal.removeEventListener("abort", finish);
       resolve();
     }

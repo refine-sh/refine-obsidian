@@ -1,6 +1,7 @@
 import { createConnection, type Socket } from "node:net";
 
 import { AsyncQueue } from "../shared/async-queue";
+import { abortReason, toError } from "../shared/errors";
 import { EngineConnectionError } from "./engine-connection-error";
 import { FrameDecoder, FrameProtocolError, encodeFrame } from "./frame-codec";
 import type { FrameConnection, FrameConnector } from "./refine-transport";
@@ -8,7 +9,7 @@ import type { FrameConnection, FrameConnector } from "./refine-transport";
 export class UnixFrameConnector implements FrameConnector {
   connect(path: string, signal: AbortSignal): Promise<FrameConnection> {
     if (signal.aborted) {
-      return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      return Promise.reject(abortReason(signal));
     }
 
     return new Promise<FrameConnection>((resolve, reject) => {
@@ -16,7 +17,7 @@ export class UnixFrameConnector implements FrameConnector {
       const connection = new UnixFrameConnection(socket);
       const abort = (): void => {
         socket.destroy(signal.reason instanceof Error ? signal.reason : undefined);
-        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+        reject(abortReason(signal));
       };
       const error = (cause: Error): void => {
         signal.removeEventListener("abort", abort);
@@ -57,7 +58,7 @@ class UnixFrameConnection implements FrameConnection {
             this.frames.push(frame);
           }
         }
-        this.frames.fail(error);
+        this.frames.fail(toError(error));
         socket.destroy(error instanceof Error ? error : undefined);
       }
     });
@@ -66,7 +67,7 @@ class UnixFrameConnection implements FrameConnection {
         this.decoder.finish();
         this.frames.close();
       } catch (error) {
-        this.frames.fail(error);
+        this.frames.fail(toError(error));
       }
     });
     socket.on("error", (error) => this.frames.fail(error));

@@ -150,7 +150,7 @@ class JSONParser {
         return result;
       }
       if (character === "\\") {
-        const escape = this.text[this.index] as string | undefined;
+        const escape = this.text[this.index];
         this.index += 1;
         switch (escape) {
           case '"':

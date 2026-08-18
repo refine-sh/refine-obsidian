@@ -7,7 +7,7 @@ export class AsyncQueue<T> implements AsyncIterableIterator<T> {
   private readonly buffered: T[] = [];
   private readonly pending: PendingNext<T>[] = [];
   private ended = false;
-  private failure: unknown;
+  private failure: Error | undefined;
 
   constructor(
     private readonly maxBuffered = Number.POSITIVE_INFINITY,
@@ -52,7 +52,7 @@ export class AsyncQueue<T> implements AsyncIterableIterator<T> {
     this.resolvePending();
   }
 
-  fail(error: unknown): void {
+  fail(error: Error): void {
     if (this.ended) {
       return;
     }

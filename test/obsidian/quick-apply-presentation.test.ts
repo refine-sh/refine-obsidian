@@ -201,8 +201,9 @@ describe("Obsidian suggestion Apply shortcuts", () => {
     );
     expect(document.activeElement).toBe(button);
     await vi.waitFor(() => expect(
-      document.querySelector<HTMLElement>(".refine-tooltip--manual")?.style.visibility,
-    ).toBe(""));
+      document.querySelector<HTMLElement>(".refine-tooltip--manual")?.classList
+        .contains("refine-tooltip--measuring"),
+    ).toBe(false));
     expect(detachedMeasurements).toBe(0);
 
     button?.dispatchEvent(keydown("Escape", "Escape"));
@@ -241,7 +242,8 @@ describe("Obsidian suggestion Apply shortcuts", () => {
     const card = document.querySelector<HTMLElement>(
       ".refine-tooltip--manual",
     );
-    await vi.waitFor(() => expect(card?.style.visibility).toBe(""));
+    await vi.waitFor(() =>
+      expect(card?.classList.contains("refine-tooltip--measuring")).toBe(false));
     expect(coordinates).toHaveBeenCalled();
   });
 

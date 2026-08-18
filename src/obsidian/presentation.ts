@@ -35,6 +35,7 @@ import type {
   SuggestionActions,
 } from "../integration/types";
 import { graphemeBoundaries } from "../shared/grapheme-boundaries";
+import { createElIn } from "./dom";
 import {
   disposeSuggestionCard,
   plainExplanationRenderer,
@@ -322,15 +323,14 @@ class InsertionAnchorWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const anchor = view.dom.ownerDocument.createElement("span");
-    anchor.className =
-      `refine-insertion-anchor refine-insertion-anchor--${this.style}`;
-    anchor.style.setProperty("--no-tooltip", "true");
+    const anchor = createElIn(view.dom.ownerDocument, "span", {
+      cls: ["refine-insertion-anchor", `refine-insertion-anchor--${this.style}`],
+    });
+    anchor.setCssProps({ "--no-tooltip": "true" });
     anchor.style.setProperty("--refine-suggestion-color", this.color);
     if (this.suggestionId === undefined) {
       anchor.classList.add("refine-insertion-anchor--provisional");
       anchor.setAttribute("aria-hidden", "true");
-      anchor.style.pointerEvents = "none";
     } else {
       anchor.dataset.refineSuggestionId = this.suggestionId;
       if (this.isQuickApplyActive) {
@@ -599,11 +599,9 @@ class PresentationInteractionController implements PluginValue {
     );
     card.classList.add(
       "refine-tooltip--floating",
+      "refine-tooltip--measuring",
       `refine-tooltip--${mode}`,
     );
-    card.style.left = "0px";
-    card.style.top = "0px";
-    card.style.visibility = "hidden";
     card.dataset.refineSuggestionId = suggestionId;
     card.addEventListener("keydown", this.handleSuggestionActionKeyDown, true);
     this.element = card;
@@ -888,7 +886,7 @@ class PresentationInteractionController implements PluginValue {
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
     card.style.left = `${roundByDevicePixelRatio(x, ownerWindow)}px`;
     card.style.top = `${roundByDevicePixelRatio(y, ownerWindow)}px`;
-    card.style.visibility = "";
+    card.classList.remove("refine-tooltip--measuring");
     card.dataset.refinePlacement = placement;
   }
 
@@ -1030,14 +1028,11 @@ class PresentationInteractionController implements PluginValue {
 
     this.closeQuickApplyTip();
     const label = suggestionActionKeyLabel(configuration.applyKey);
-    const tip = this.view.dom.ownerDocument.createElement("div");
-    tip.className = "refine-quick-apply-tip";
-    tip.textContent = `Press ${label} to apply`;
-    tip.setAttribute("aria-hidden", "true");
-    tip.style.left = "0px";
-    tip.style.top = "0px";
-    tip.style.visibility = "hidden";
-    this.view.dom.ownerDocument.body.append(tip);
+    const tip = this.view.dom.ownerDocument.body.createDiv({
+      cls: ["refine-quick-apply-tip", "refine-quick-apply-tip--measuring"],
+      text: `Press ${label} to apply`,
+      attr: { "aria-hidden": "true" },
+    });
     this.quickApplyTip = tip;
     this.quickApplyTipIdentity = identity;
     const target = quickApplyTipTarget(suggestion, cursor);
@@ -1087,7 +1082,7 @@ class PresentationInteractionController implements PluginValue {
     const ownerWindow = this.view.dom.ownerDocument.defaultView;
     tip.style.left = `${roundByDevicePixelRatio(x, ownerWindow)}px`;
     tip.style.top = `${roundByDevicePixelRatio(y, ownerWindow)}px`;
-    tip.style.visibility = "";
+    tip.classList.remove("refine-quick-apply-tip--measuring");
     tip.dataset.refinePlacement = placement;
   }
 

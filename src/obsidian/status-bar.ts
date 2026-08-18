@@ -304,11 +304,11 @@ function appendCheckingProgress(
   element: HTMLElement,
   progress: CheckingProgress,
 ): void {
-  const indicator = element.ownerDocument.createElement("span");
-  indicator.className = "refine-status-bar__progress";
-  indicator.textContent = `${progress.completedUnitCount}/${progress.totalUnitCount}`;
-  indicator.setAttribute("aria-hidden", "true");
-  element.append(indicator);
+  element.createSpan({
+    cls: "refine-status-bar__progress",
+    text: `${progress.completedUnitCount}/${progress.totalUnitCount}`,
+    attr: { "aria-hidden": "true" },
+  });
 }
 
 function appendSuggestionCount(
@@ -319,11 +319,11 @@ function appendSuggestionCount(
   if (count === 0 && !includeZero) {
     return;
   }
-  const badge = element.ownerDocument.createElement("span");
-  badge.className = "refine-status-bar__count";
-  badge.textContent = String(count);
-  badge.setAttribute("aria-hidden", "true");
-  element.append(badge);
+  element.createSpan({
+    cls: "refine-status-bar__count",
+    text: String(count),
+    attr: { "aria-hidden": "true" },
+  });
 }
 
 function renderState(

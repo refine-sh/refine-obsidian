@@ -5,6 +5,7 @@ import type {
   SuggestionActionKind,
   SuggestionActions,
 } from "../integration/types";
+import { createElIn } from "./dom";
 
 export type ExplanationRenderer = (
   markdown: string,
@@ -15,9 +16,10 @@ export const plainExplanationRenderer: ExplanationRenderer = (
   markdown,
   element,
 ) => {
-  const content = element.ownerDocument.createElement("div");
-  content.className = "refine-tooltip__explanation-plain";
-  content.textContent = markdown;
+  const content = createElIn(element.ownerDocument, "div", {
+    cls: "refine-tooltip__explanation-plain",
+    text: markdown,
+  });
   element.replaceChildren(content);
 };
 
@@ -158,18 +160,19 @@ function createSuggestionCardShell(
   ownerDocument: Document,
   appearance: PresentationAppearance,
 ): HTMLElement {
-  const card = ownerDocument.createElement("div");
-  card.className = "refine-tooltip";
-  card.setAttribute("role", "dialog");
+  const card = createElIn(ownerDocument, "div", {
+    cls: "refine-tooltip",
+    attr: { role: "dialog" },
+  });
   card.tabIndex = -1;
-  card.style.setProperty("--no-tooltip", "true");
+  card.setCssProps({ "--no-tooltip": "true" });
   applySuggestionCardAppearance(card, appearance);
-  const label = ownerDocument.createElement("span");
-  label.id = `refine-tooltip-label-${++suggestionCardLabelSequence}`;
-  label.className = "refine-tooltip__accessible-label";
-  label.textContent = "Refine writing suggestion";
+  const label = card.createSpan({
+    cls: "refine-tooltip__accessible-label",
+    text: "Refine writing suggestion",
+    attr: { id: `refine-tooltip-label-${++suggestionCardLabelSequence}` },
+  });
   card.setAttribute("aria-labelledby", label.id);
-  card.append(label);
   card.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") {
       return;
@@ -198,15 +201,16 @@ function renderSuggestionHeader(
   ownerDocument: Document,
   suggestion: PresentedSuggestion,
 ): SuggestionCardHeader {
-  const header = ownerDocument.createElement("div");
-  header.className = "refine-tooltip__header";
-  const title = ownerDocument.createElement("span");
-  title.className = "refine-tooltip__caption";
-  title.textContent = `${suggestionKindLabel(suggestion.kind)} - ${suggestion.attribution.languageDisplayName}`;
-  header.append(title);
-  const headerDetail = ownerDocument.createElement("span");
-  headerDetail.className = "refine-tooltip__caption refine-tooltip__model";
-  header.append(headerDetail);
+  const header = createElIn(ownerDocument, "div", {
+    cls: "refine-tooltip__header",
+  });
+  header.createSpan({
+    cls: "refine-tooltip__caption",
+    text: `${suggestionKindLabel(suggestion.kind)} - ${suggestion.attribution.languageDisplayName}`,
+  });
+  const headerDetail = header.createSpan({
+    cls: ["refine-tooltip__caption", "refine-tooltip__model"],
+  });
   return { element: header, model: headerDetail };
 }
 
@@ -215,13 +219,15 @@ function renderSuggestionDiff(
   suggestion: PresentedSuggestion,
   appearance: PresentationAppearance,
 ): HTMLElement {
-  const diff = ownerDocument.createElement("div");
-  diff.className = "refine-tooltip__diff";
+  const diff = createElIn(ownerDocument, "div", {
+    cls: "refine-tooltip__diff",
+  });
   diff.dir = suggestion.attribution.textDirection;
   for (const run of suggestion.diff) {
-    const part = ownerDocument.createElement("span");
-    part.className = `refine-tooltip__${run.kind}`;
-    part.textContent = run.text;
+    const part = diff.createSpan({
+      cls: `refine-tooltip__${run.kind}`,
+      text: run.text,
+    });
     if (run.kind !== "unchanged" && /^ +$/.test(run.text)) {
       const change = run.kind === "insert" ? "Inserted" : "Deleted";
       part.classList.add("refine-tooltip__whitespace");
@@ -233,7 +239,6 @@ function renderSuggestionDiff(
         part.dataset.refineWhitespaceMarker = "·".repeat(run.text.length);
       }
     }
-    diff.append(part);
   }
   return diff;
 }
@@ -264,26 +269,32 @@ class SuggestionExplanationController {
     private readonly checkModel: HTMLElement,
     private readonly engageCard: () => void,
   ) {
-    this.section = ownerDocument.createElement("section");
-    this.section.className = "refine-tooltip__explanation-section";
+    this.section = createElIn(ownerDocument, "section", {
+      cls: "refine-tooltip__explanation-section",
+    });
     this.section.hidden = true;
     this.section.tabIndex = -1;
 
-    const header = ownerDocument.createElement("div");
-    header.className = "refine-tooltip__header";
-    this.title = ownerDocument.createElement("span");
-    this.title.className = "refine-tooltip__caption";
-    this.title.id =
-      `refine-tooltip-explanation-label-${++suggestionExplanationLabelSequence}`;
-    this.model = ownerDocument.createElement("span");
-    this.model.className = "refine-tooltip__caption refine-tooltip__model";
-    header.append(this.title, this.model);
+    const header = this.section.createDiv({
+      cls: "refine-tooltip__header",
+    });
+    this.title = header.createSpan({
+      cls: "refine-tooltip__caption",
+      attr: {
+        id:
+          `refine-tooltip-explanation-label-${++suggestionExplanationLabelSequence}`,
+      },
+    });
+    this.model = header.createSpan({
+      cls: ["refine-tooltip__caption", "refine-tooltip__model"],
+    });
 
-    this.explanation = ownerDocument.createElement("div");
-    this.explanation.className = "refine-tooltip__explanation";
-    this.status = ownerDocument.createElement("div");
-    this.status.className = "refine-tooltip__status";
-    this.section.append(header, this.explanation, this.status);
+    this.explanation = this.section.createDiv({
+      cls: "refine-tooltip__explanation",
+    });
+    this.status = this.section.createDiv({
+      cls: "refine-tooltip__status",
+    });
 
     if (suggestion.availableActions.includes("explain")) {
       this.button = actionButton(ownerDocument, "explain", (button) =>
@@ -426,9 +437,9 @@ class SuggestionActionFeedback {
   readonly element: HTMLElement;
 
   constructor(ownerDocument: Document) {
-    this.element = ownerDocument.createElement("div");
-    this.element.className =
-      "refine-tooltip__status refine-tooltip__feedback-status";
+    this.element = createElIn(ownerDocument, "div", {
+      cls: ["refine-tooltip__status", "refine-tooltip__feedback-status"],
+    });
   }
 
   clear(): void {
@@ -514,8 +525,9 @@ function renderSuggestionActions(
   engageCard: () => void,
   close: () => void,
 ): HTMLElement {
-  const actionRow = ownerDocument.createElement("div");
-  actionRow.className = "refine-tooltip__actions";
+  const actionRow = createElIn(ownerDocument, "div", {
+    cls: "refine-tooltip__actions",
+  });
   const bottomActions = ["dismiss", "report", "apply"] as const;
   for (const action of bottomActions) {
     if (!suggestion.availableActions.includes(action)) {
@@ -563,14 +575,15 @@ function actionButton(
   action: SuggestionActionKind,
   run: (button: HTMLButtonElement) => Promise<void>,
 ): HTMLButtonElement {
-  const button = ownerDocument.createElement("button");
-  button.type = "button";
+  const button = createElIn(ownerDocument, "button", {
+    cls: "refine-tooltip__action",
+    type: "button",
+    text: `${action[0]?.toUpperCase() ?? ""}${action.slice(1)}`,
+  });
   button.dataset.refineAction = action;
-  button.classList.add("refine-tooltip__action");
   if (action !== "apply") {
     button.classList.add("refine-tooltip__action--text");
   }
-  button.textContent = `${action[0]?.toUpperCase() ?? ""}${action.slice(1)}`;
   button.addEventListener("click", () => {
     if (button.disabled || button.getAttribute("aria-disabled") === "true") {
       return;

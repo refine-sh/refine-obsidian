@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type { PresentationInteraction } from "../integration/types";
+import { abortReason } from "../shared/errors";
+import { clearTimer, setTimer, type TimerHandle } from "../shared/timers";
 
 import {
   EngineConnectionError,
@@ -321,9 +323,9 @@ async function receiveHandshakeResponse(
       abort();
     }
   });
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timeout: TimerHandle | undefined;
   const timedOut = new Promise<never>((_resolve, reject) => {
-    timeout = setTimeout(() => {
+    timeout = setTimer(() => {
       if (signal.aborted) {
         reject(abortReason(signal));
       } else {
@@ -351,17 +353,11 @@ async function receiveHandshakeResponse(
     }
     throw error;
   } finally {
-    if (timeout !== undefined) {
-      clearTimeout(timeout);
-    }
+    clearTimer(timeout);
     if (abort !== undefined) {
       signal.removeEventListener("abort", abort);
     }
   }
-}
-
-function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 class Session implements RefineTransportSession {
