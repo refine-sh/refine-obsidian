@@ -552,6 +552,180 @@ describe("ObsidianWritingHost", () => {
     host.close();
   });
 
+  it("re-declares the source syntax under a new revision when the setting changes", async () => {
+    const view = createView("Alpha beta.\nGamma delta.");
+    let syntax: "markdownDocument" | "markdownDocumentHardLineBreaks" =
+      "markdownDocumentHardLineBreaks";
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "declare",
+      resolveSourceSyntax: () => syntax,
+    });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+
+    await expect(observations.next()).resolves.toMatchObject({
+      value: {
+        type: "snapshot",
+        snapshot: {
+          revision: "declare:0",
+          sources: [
+            {
+              sourceSyntax: "markdownDocumentHardLineBreaks",
+              text: "Alpha beta.\nGamma delta.",
+            },
+          ],
+        },
+      },
+    });
+    await observations.next();
+
+    syntax = "markdownDocument";
+    host.declarationChanged();
+
+    // The unchanged text under a changed declaration is a new revision, so a
+    // reused revision can never carry two different source syntaxes.
+    await expect(observations.next()).resolves.toMatchObject({
+      value: {
+        type: "snapshot",
+        snapshot: {
+          revision: "declare:1",
+          sources: [
+            {
+              sourceSyntax: "markdownDocument",
+              text: "Alpha beta.\nGamma delta.",
+            },
+          ],
+        },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("keeps the revision stable when a configuration change proves nothing", async () => {
+    const view = createView("Alpha beta.");
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "steady",
+      resolveSourceSyntax: () => "markdownDocumentHardLineBreaks",
+    });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    host.declarationChanged();
+    view.dispatch({ changes: { from: 0, to: 5, insert: "Gamma" } });
+
+    // The unrelated configuration change bumped nothing: the next revision
+    // after the text edit is :1, and it still declares the same syntax.
+    await expect(observations.next()).resolves.toMatchObject({
+      value: {
+        type: "snapshot",
+        snapshot: {
+          revision: "steady:1",
+          sources: [
+            {
+              sourceSyntax: "markdownDocumentHardLineBreaks",
+              text: "Gamma beta.",
+            },
+          ],
+        },
+      },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("emits nothing for a configuration change that proves nothing", async () => {
+    const view = createView("Alpha beta.");
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "silent",
+      resolveSourceSyntax: () => "markdownDocumentHardLineBreaks",
+    });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    const afterNoop = observations.next();
+    host.declarationChanged();
+
+    await expect(Promise.race([
+      afterNoop.then(() => "observation" as const),
+      new Promise<"no-observation">((resolve) => {
+        setTimeout(() => resolve("no-observation"), 25);
+      }),
+    ])).resolves.toBe("no-observation");
+    await expect(host.validateRevision("silent:0")).resolves.toEqual({
+      status: "current",
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
+  it("ignores a declaration change after the host closes", () => {
+    const view = createView("Alpha beta.");
+    let syntax: "markdownDocument" | "markdownDocumentHardLineBreaks" =
+      "markdownDocumentHardLineBreaks";
+    let configReads = 0;
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "closed-declare",
+      resolveSourceSyntax: () => {
+        configReads += 1;
+        return syntax;
+      },
+    });
+
+    host.close();
+    syntax = "markdownDocument";
+    const readsWhenClosed = configReads;
+
+    expect(() => host.declarationChanged()).not.toThrow();
+    expect(configReads).toBe(readsWhenClosed);
+  });
+
+  it("republishes an absorbed declaration change before a requested check", async () => {
+    const view = createView("Alpha beta.");
+    let syntax: "markdownDocument" | "markdownDocumentHardLineBreaks" =
+      "markdownDocumentHardLineBreaks";
+    const host = new ObsidianWritingHost(view, {
+      sessionId: "absorb",
+      resolveSourceSyntax: () => syntax,
+    });
+    const controller = new AbortController();
+    const observations = host.observe(controller.signal)[Symbol.asyncIterator]();
+    await observations.next();
+    await observations.next();
+
+    // The configuration event never arrives; the check itself must not be
+    // issued against a revision the integration has never seen.
+    syntax = "markdownDocument";
+    host.requestCheck();
+
+    await expect(observations.next()).resolves.toMatchObject({
+      value: {
+        type: "snapshot",
+        snapshot: {
+          revision: "absorb:1",
+          sources: [{ sourceSyntax: "markdownDocument" }],
+        },
+      },
+    });
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { type: "checkRequested", revision: "absorb:1" },
+    });
+
+    controller.abort();
+    await observations.return?.();
+    host.close();
+  });
+
   function createView(doc: string, extensions: readonly Extension[] = []): EditorView {
     const view = new EditorView({
       parent: document.body,

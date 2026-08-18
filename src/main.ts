@@ -19,6 +19,10 @@ import {
   REFINE_MENU_BAR_ICON_ID,
   REFINE_MENU_BAR_ICON_SVG,
 } from "./obsidian/icons";
+import {
+  documentSourceSyntax,
+  onLineBreakSettingChange,
+} from "./obsidian/line-break-setting";
 import { ObsidianSessionManager } from "./obsidian/session-manager";
 import { plainExplanationRenderer } from "./obsidian/suggestion-card";
 import {
@@ -65,6 +69,7 @@ export default class RefinePlugin extends Plugin {
     const integration = createRefineIntegration({ enginePort });
     this.sessions = new ObsidianSessionManager({
       integration,
+      resolveSourceSyntax: () => documentSourceSyntax(this.app.vault),
       renderExplanation: (markdown, element) => {
         const component = new Component();
         let active = true;
@@ -107,6 +112,12 @@ export default class RefinePlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("file-open", synchronize));
     this.registerEvent(this.app.workspace.on("layout-change", synchronize));
     this.registerEvent(this.app.workspace.on("editor-change", synchronize));
+    const lineBreakSetting = onLineBreakSettingChange(this.app.vault, () => {
+      this.sessions?.declarationChanged();
+    });
+    if (lineBreakSetting !== undefined) {
+      this.registerEvent(lineBreakSetting);
+    }
 
     this.addCommand({
       id: "check-current-note",

@@ -17,6 +17,7 @@ import type {
 } from "../integration/types";
 import { AsyncQueue } from "../shared/async-queue";
 import { unicodeScalarBoundaries } from "../shared/unicode-scalar-boundaries";
+import type { ObsidianDocumentSyntax } from "./line-break-setting";
 import {
   clearLivePresentationPreservingProvisional,
   clearPresentation,
@@ -29,6 +30,12 @@ export interface ObsidianWritingHostOptions {
   readonly sessionId?: string;
   readonly onPresentation?: (snapshot: PresentationSnapshot) => void;
   readonly renderExplanation?: ExplanationRenderer;
+  /**
+   * Resolves the declared syntax for the document at snapshot time. The
+   * declaration is host-authoritative editor state, so it is re-read whenever
+   * the document or the vault configuration changes.
+   */
+  readonly resolveSourceSyntax?: () => ObsidianDocumentSyntax;
 }
 
 const DOCUMENT_SOURCE_ID = "document";
@@ -37,9 +44,12 @@ const DOCUMENT_SOURCE_ID = "document";
  * Obsidian renders every source line ending as a line break in a default vault,
  * so Refine must keep each one exactly where the author put it. This syntax
  * still checks prose wrapped across source lines as one logical paragraph; it
- * only forbids Refine from moving, removing, or introducing a line ending.
+ * only forbids Refine from moving, removing, or introducing a line ending. A
+ * vault whose "Strict line breaks" setting is provably on renders CommonMark
+ * instead and may declare `markdownDocument` through `resolveSourceSyntax`.
  */
-const DOCUMENT_SOURCE_SYNTAX = "markdownDocumentHardLineBreaks";
+const DEFAULT_SOURCE_SYNTAX: ObsidianDocumentSyntax =
+  "markdownDocumentHardLineBreaks";
 
 interface HostViewBridge {
   readonly extension: Compartment;
@@ -58,8 +68,11 @@ export class ObsidianWritingHost {
   private readonly onPresentation: (snapshot: PresentationSnapshot) => void;
   private readonly sessionId: string;
   private readonly renderExplanation: ExplanationRenderer | undefined;
+  private readonly resolveSourceSyntax: () => ObsidianDocumentSyntax;
   private incarnation = 0;
   private currentText: string;
+  private currentSyntax: ObsidianDocumentSyntax;
+  private lastObservedRevision: string | undefined;
   private observations: AsyncQueue<HostObservation> | undefined;
   private lastAttention: AttentionObservation | undefined;
   private attentionSuspendedForFocusLoss = false;
@@ -73,7 +86,10 @@ export class ObsidianWritingHost {
     this.sessionId = options.sessionId ?? crypto.randomUUID();
     this.onPresentation = options.onPresentation ?? (() => undefined);
     this.renderExplanation = options.renderExplanation;
+    this.resolveSourceSyntax =
+      options.resolveSourceSyntax ?? (() => DEFAULT_SOURCE_SYNTAX);
     this.currentText = this.view.state.doc.toString();
+    this.currentSyntax = this.resolveSourceSyntax();
     const existing = hostViewBridges.get(view);
     if (existing) {
       this.bridge = existing;
@@ -226,14 +242,26 @@ export class ObsidianWritingHost {
     if (this.closed) {
       return;
     }
-    const observation: HostObservation =
+    const revision = this.snapshot().revision;
+    const observations: HostObservation[] = [];
+    if (revision !== this.lastObservedRevision) {
+      // The snapshot refresh above can absorb a declaration change whose
+      // configuration event never arrived. A check for a revision the
+      // integration has never seen is dropped, so republish the document
+      // before requesting the check.
+      observations.push(this.snapshotObservation());
+    }
+    observations.push(
       intent === undefined
-        ? { type: "checkRequested", revision: this.snapshot().revision }
-        : { type: "checkRequested", revision: this.snapshot().revision, intent };
-    if (this.observations) {
-      this.observations.push(observation);
-    } else {
-      this.pendingRequests.push(observation);
+        ? { type: "checkRequested", revision }
+        : { type: "checkRequested", revision, intent },
+    );
+    for (const observation of observations) {
+      if (this.observations) {
+        this.observations.push(observation);
+      } else {
+        this.pendingRequests.push(observation);
+      }
     }
   }
 
@@ -310,8 +338,26 @@ export class ObsidianWritingHost {
     this.observations?.push(this.snapshotObservation());
   }
 
+  /**
+   * Re-reads the declared syntax after a vault configuration change. A
+   * changed declaration is a new document revision even when the text is
+   * unchanged; an unchanged one emits nothing.
+   */
+  declarationChanged(): void {
+    if (this.closed || this.bridge.owner !== this) {
+      return;
+    }
+    if (this.resolveSourceSyntax() === this.currentSyntax) {
+      return;
+    }
+    this.refreshIncarnation();
+    this.observations?.push(this.snapshotObservation());
+  }
+
   private snapshotObservation(): HostObservation {
-    return { type: "snapshot", snapshot: this.snapshot() };
+    const snapshot = this.snapshot();
+    this.lastObservedRevision = snapshot.revision;
+    return { type: "snapshot", snapshot };
   }
 
   private attentionObservation(): AttentionObservation {
@@ -341,7 +387,7 @@ export class ObsidianWritingHost {
       sources: [
         {
           sourceId: DOCUMENT_SOURCE_ID,
-          sourceSyntax: DOCUMENT_SOURCE_SYNTAX,
+          sourceSyntax: this.currentSyntax,
           text: this.currentText,
         },
       ],
@@ -383,8 +429,10 @@ export class ObsidianWritingHost {
 
   private refreshIncarnation(): void {
     const text = this.view.state.doc.toString();
-    if (text !== this.currentText) {
+    const syntax = this.resolveSourceSyntax();
+    if (text !== this.currentText || syntax !== this.currentSyntax) {
       this.currentText = text;
+      this.currentSyntax = syntax;
       this.incarnation += 1;
     }
   }

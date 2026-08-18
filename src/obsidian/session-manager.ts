@@ -11,6 +11,7 @@ import {
 } from "../transport/refine-transport";
 import { isIncompatibleEngineError } from "./compatibility";
 import { ObsidianWritingHost } from "./host";
+import type { ObsidianDocumentSyntax } from "./line-break-setting";
 import type { ExplanationRenderer } from "./presentation";
 
 export type ObsidianSessionState =
@@ -37,6 +38,7 @@ export interface ObsidianSessionManagerOptions {
   readonly onError?: (error: unknown) => void;
   readonly onStateChange?: (state: ObsidianSessionState) => void;
   readonly renderExplanation?: ExplanationRenderer;
+  readonly resolveSourceSyntax?: () => ObsidianDocumentSyntax;
 }
 
 interface ActiveSession {
@@ -51,6 +53,9 @@ export class ObsidianSessionManager {
   private readonly onError: (error: unknown) => void;
   private readonly onStateChange: (state: ObsidianSessionState) => void;
   private readonly renderExplanation: ExplanationRenderer | undefined;
+  private readonly resolveSourceSyntax:
+    | (() => ObsidianDocumentSyntax)
+    | undefined;
   private active: ActiveSession | undefined;
   private disposed = false;
 
@@ -59,6 +64,7 @@ export class ObsidianSessionManager {
     this.onError = options.onError ?? (() => undefined);
     this.onStateChange = options.onStateChange ?? (() => undefined);
     this.renderExplanation = options.renderExplanation;
+    this.resolveSourceSyntax = options.resolveSourceSyntax;
     this.onStateChange({ type: "inactive" });
   }
 
@@ -81,6 +87,9 @@ export class ObsidianSessionManager {
       ...(this.renderExplanation === undefined
         ? {}
         : { renderExplanation: this.renderExplanation }),
+      ...(this.resolveSourceSyntax === undefined
+        ? {}
+        : { resolveSourceSyntax: this.resolveSourceSyntax }),
       onPresentation: (snapshot) => {
         if (session !== undefined && this.active === session) {
           this.onStateChange({ type: "presented", snapshot });
@@ -118,6 +127,14 @@ export class ObsidianSessionManager {
     ) {
       this.active.host.requestCheck(intent);
     }
+  }
+
+  /**
+   * Re-reads the declared source syntax after a vault configuration change.
+   * A changed declaration republishes the document under a new revision.
+   */
+  declarationChanged(): void {
+    this.active?.host.declarationChanged();
   }
 
   deactivate(view?: EditorView): void {

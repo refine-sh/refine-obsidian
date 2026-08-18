@@ -304,6 +304,53 @@ describe("ObsidianSessionManager", () => {
     },
   );
 
+  it("threads the syntax resolver into the host and forwards declaration changes", async () => {
+    const integration = new RecordingIntegration();
+    let syntax: "markdownDocument" | "markdownDocumentHardLineBreaks" =
+      "markdownDocumentHardLineBreaks";
+    const manager = new ObsidianSessionManager({
+      integration,
+      resolveSourceSyntax: () => syntax,
+    });
+    const view = createView("Alpha beta.");
+    manager.activate(view, {});
+    await vi.waitFor(() => {
+      expect(integration.observations.length).toBeGreaterThanOrEqual(1);
+    });
+    expect(integration.observations[0]).toMatchObject({
+      type: "snapshot",
+      snapshot: {
+        sources: [{ sourceSyntax: "markdownDocumentHardLineBreaks" }],
+      },
+    });
+
+    syntax = "markdownDocument";
+    manager.declarationChanged();
+    await vi.waitFor(() => {
+      expect(
+        integration.observations.some(
+          (observation) =>
+            observation.type === "snapshot" &&
+            observation.snapshot.sources[0]?.sourceSyntax ===
+              "markdownDocument",
+        ),
+      ).toBe(true);
+    });
+
+    manager.dispose();
+  });
+
+  it("ignores a declaration change without an active session", () => {
+    const manager = new ObsidianSessionManager({
+      integration: new RecordingIntegration(),
+    });
+
+    expect(() => manager.declarationChanged()).not.toThrow();
+
+    manager.dispose();
+    expect(() => manager.declarationChanged()).not.toThrow();
+  });
+
   function createView(doc: string, extensions: readonly Extension[] = []): EditorView {
     const parent = document.createElement("div");
     document.body.append(parent);
