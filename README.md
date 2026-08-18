@@ -71,24 +71,6 @@ demand, open the Command Palette and run **Refine: Check current note**.
 Suggestion colors, highlighting, automatic checks, local or hosted models, and
 Quick Apply shortcuts are configured in the Refine app.
 
-## Your line breaks stay put
-
-In a default vault, Refine never joins your lines. Every line break in a note
-stays exactly where you typed it: applying a suggestion never removes a line
-break, never adds one, and never rewraps your text across the lines you wrote.
-
-Prose you wrapped over several lines is still read as one paragraph, so Refine
-still catches a mistake that spans a line break. A correction that could not be
-made without moving a line break is not offered at all.
-
-This follows **Settings → Editor → Strict line breaks**. With the setting off —
-Obsidian's default — every line break renders as a real line break, so Refine
-keeps each one in place as described above. With the setting on, a single line
-break renders as an ordinary space, so Refine may rewrap a corrected paragraph
-the way any Markdown tool would. Toggling the setting takes effect immediately: the
-note is re-read under the new mode, and a check that was still running is
-discarded rather than finished under the old one.
-
 ## Privacy and offline use
 
 The plugin sends the complete active Markdown note to the Refine app over a
