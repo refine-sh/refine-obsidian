@@ -45,7 +45,9 @@ jobs:
           fi
 
       - name: Lint the plugin source
-        run: npm run lint
+        # Tags cut before the lint setup existed carry no lint script, and
+        # re-attesting their assets should not re-review their source.
+        run: npm run --if-present lint
 
       - name: Run the test suite
         run: npm test
