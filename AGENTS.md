@@ -1,9 +1,10 @@
 # Refine Obsidian Contributor Guidance
 
 For changes to the host interface, integration lifecycle, source revisions,
-suggestion actions, or Apply semantics, read the normative ADR first:
+suggestion actions, or Apply semantics, read the normative specification
+first:
 
-`https://github.com/runjuu/grammar/blob/main/docs/adr/0012-host-native-writing-check-integration-interface.md`
+`https://github.com/refine-sh/refine-protocol/blob/main/spec/protocol.md`
 
 Keep ownership at these boundaries:
 

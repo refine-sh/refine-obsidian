@@ -5,10 +5,10 @@
   "homepage": "https://refine.sh/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/runjuu/refine-obsidian.git"
+    "url": "git+https://github.com/refine-sh/refine-obsidian.git"
   },
   "bugs": {
-    "url": "https://github.com/runjuu/refine-obsidian/issues"
+    "url": "https://github.com/refine-sh/refine-obsidian/issues"
   },
   "main": "main.js",
   "type": "module",

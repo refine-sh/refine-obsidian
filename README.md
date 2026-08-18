@@ -169,7 +169,7 @@ Ready to use a local AI grammar checker in Obsidian?
 ## Support
 
 For plugin bugs and feature requests, open a
-[GitHub issue](https://github.com/runjuu/refine-obsidian/issues). For help with
+[GitHub issue](https://github.com/refine-sh/refine-obsidian/issues). For help with
 the Refine app, email [support@refine.sh](mailto:support@refine.sh).
 
 Refine supports same-user macOS writing-host clients connecting to the shipping
@@ -185,9 +185,9 @@ The public statement “Compatible with Refine Protocol 1.0” has additional
 conditions: each advertised release must pass the conformance suite and make
 the source-flow, Report destination/data, explicit Report gesture, and client
 telemetry/retention disclosures. See the protocol package's
-[support profile](https://github.com/runjuu/refine-protocol/blob/main/SUPPORT.md)
+[support profile](https://github.com/refine-sh/refine-protocol/blob/main/SUPPORT.md)
 and
-[compatibility-claim conditions](https://github.com/runjuu/refine-protocol/blob/main/COMPATIBILITY-CLAIMS.md).
+[compatibility-claim conditions](https://github.com/refine-sh/refine-protocol/blob/main/COMPATIBILITY-CLAIMS.md).
 
 Refine for Obsidian is available under the [MIT License](LICENSE).
 
@@ -215,10 +215,9 @@ For local testing, copy `manifest.json`, `main.js`, and `styles.css` into
 `.obsidian/plugins/refine/` in a test vault, then reload Obsidian and enable
 **Refine** under Community plugins.
 
-The integration boundaries and safe-Apply semantics are documented in
-[ADR 0012: Host-Native Writing-Check Integration Interface](https://github.com/runjuu/grammar/blob/main/docs/adr/0012-host-native-writing-check-integration-interface.md).
-The supported public wire is
-[Refine Integration Protocol 1.0](https://github.com/runjuu/refine-protocol).
+The integration boundaries and safe-Apply semantics are documented in the
+[Refine Integration Protocol 1.0 specification](https://github.com/refine-sh/refine-protocol/blob/main/spec/protocol.md),
+which is the supported public wire.
 It is an exact-version, local macOS client-to-Refine interface. Endpoint
 permissions, peer-UID checks, and a per-launch token exclude other OS users and
 nonlocal peers; self-reported client labels do not authenticate one process
