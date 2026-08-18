@@ -4,6 +4,7 @@ import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { EngineFaultError } from "../../src/integration/refine-integration";
 import type {
   HostObservation,
   PresentationSnapshot,
@@ -95,7 +96,7 @@ describe("ObsidianSessionManager", () => {
           sources: [
             {
               sourceId: "document",
-              sourceSyntax: "markdownDocument",
+              sourceSyntax: "markdownDocumentHardLineBreaks",
               text: "first note",
             },
           ],
@@ -226,6 +227,49 @@ describe("ObsidianSessionManager", () => {
 
     manager.deactivate();
     expect(states.at(-1)).toEqual({ type: "inactive" });
+    manager.dispose();
+  });
+
+  it("separates a Refine that cannot read the plugin from a Refine that is not running", async () => {
+    const states: ObsidianSessionState[] = [];
+    const manager = new ObsidianSessionManager({
+      integration: {
+        run: async () => {
+          throw new EngineFaultError("malformedMessage");
+        },
+      },
+      onStateChange: (state) => states.push(state),
+    });
+
+    const view = createView("draft");
+    manager.activate(view, view);
+
+    await vi.waitFor(() =>
+      expect(states.at(-1)).toEqual({
+        type: "failed",
+        reason: "incompatibleEngine",
+      }),
+    );
+    manager.dispose();
+  });
+
+  it("reports an unavailable Refine for a fatal fault it cannot attribute to version skew", async () => {
+    const states: ObsidianSessionState[] = [];
+    const manager = new ObsidianSessionManager({
+      integration: {
+        run: async () => {
+          throw new EngineFaultError("internalError");
+        },
+      },
+      onStateChange: (state) => states.push(state),
+    });
+
+    const view = createView("draft");
+    manager.activate(view, view);
+
+    await vi.waitFor(() =>
+      expect(states.at(-1)).toEqual({ type: "failed", reason: "unavailable" }),
+    );
     manager.dispose();
   });
 

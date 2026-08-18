@@ -18,7 +18,11 @@ import {
   type FrameConnection,
   type FrameConnector,
 } from "../../src/transport/refine-transport";
-import type { ClientCommand } from "../../src/transport/wire";
+import {
+  isSourceSyntax,
+  SOURCE_SYNTAXES,
+  type ClientCommand,
+} from "../../src/transport/wire";
 
 const VALID_LAUNCH_TOKEN = "A".repeat(64);
 
@@ -2422,6 +2426,32 @@ describe("Refine transport handshake", () => {
       "1-to-128-byte visible ASCII identifier",
     );
     await fixture.session.close();
+  });
+});
+
+describe("Integration Protocol 1.0 source syntaxes", () => {
+  it("closes the wire registry over the four base values in schema order", () => {
+    expect(SOURCE_SYNTAXES).toHaveLength(4);
+    expect(SOURCE_SYNTAXES).toEqual([
+      "plainText",
+      "markdownDocument",
+      "markdownDocumentHardLineBreaks",
+      "latexDocument",
+    ]);
+  });
+
+  it("accepts the immovable-line-ending Markdown syntax the Obsidian host declares", () => {
+    expect(isSourceSyntax("markdownDocumentHardLineBreaks")).toBe(true);
+  });
+
+  it.each([
+    "markdownDocumentHardLinebreaks",
+    "markdownDocumentHardLineBreak",
+    "markdownHardLineBreaks",
+    "latexDocumentHardLineBreaks",
+    "htmlDocument",
+  ])("rejects the unknown source syntax %s", (syntax) => {
+    expect(isSourceSyntax(syntax)).toBe(false);
   });
 });
 

@@ -58,6 +58,7 @@ export function isSuggestionActionKey(value: unknown): value is SuggestionAction
 export const SOURCE_SYNTAXES = [
   "plainText",
   "markdownDocument",
+  "markdownDocumentHardLineBreaks",
   "latexDocument",
 ] as const satisfies readonly SourceSnapshot["sourceSyntax"][];
 

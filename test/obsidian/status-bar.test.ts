@@ -435,6 +435,10 @@ describe("Refine status bar", () => {
       { type: "error" } as const,
     ],
     [
+      { type: "failed", reason: "incompatibleEngine" } as const,
+      { type: "error" } as const,
+    ],
+    [
       {
         type: "failed",
         reason: "incompatibleProtocol",

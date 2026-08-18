@@ -33,6 +33,14 @@ export interface ObsidianWritingHostOptions {
 
 const DOCUMENT_SOURCE_ID = "document";
 
+/**
+ * Obsidian renders every source line ending as a line break in a default vault,
+ * so Refine must keep each one exactly where the author put it. This syntax
+ * still checks prose wrapped across source lines as one logical paragraph; it
+ * only forbids Refine from moving, removing, or introducing a line ending.
+ */
+const DOCUMENT_SOURCE_SYNTAX = "markdownDocumentHardLineBreaks";
+
 interface HostViewBridge {
   readonly extension: Compartment;
   owner: ObsidianWritingHost | undefined;
@@ -333,7 +341,7 @@ export class ObsidianWritingHost {
       sources: [
         {
           sourceId: DOCUMENT_SOURCE_ID,
-          sourceSyntax: "markdownDocument",
+          sourceSyntax: DOCUMENT_SOURCE_SYNTAX,
           text: this.currentText,
         },
       ],

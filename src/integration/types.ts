@@ -9,7 +9,11 @@ export interface DocumentSnapshot {
 export interface SourceSnapshot {
   readonly sourceId: SourceID;
   readonly text: string;
-  readonly sourceSyntax: "plainText" | "markdownDocument" | "latexDocument";
+  readonly sourceSyntax:
+    | "plainText"
+    | "markdownDocument"
+    | "markdownDocumentHardLineBreaks"
+    | "latexDocument";
 }
 
 export interface WritingAttention {

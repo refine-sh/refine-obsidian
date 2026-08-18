@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createRefineIntegration } from "../../src/integration/refine-integration";
+import {
+  createRefineIntegration,
+  EngineFaultError,
+} from "../../src/integration/refine-integration";
 import {
   DEFAULT_PRESENTATION_APPEARANCE,
   DEFAULT_PRESENTATION_INTERACTION,
@@ -2326,6 +2329,25 @@ describe("RefineIntegration", () => {
       "openDocument",
       "closeDocument",
     ]);
+  });
+
+  it("surfaces the fault code when Refine fatally rejects an opened document", async () => {
+    const host = new FakeHost(snapshot("doc:0", "first"));
+    const engine = new ReconnectingEngine();
+    const integration = createRefineIntegration({ enginePort: engine, reconnectDelayMs: 0 });
+    const run = integration.run({ host, signal: new AbortController().signal });
+    await vi.waitFor(() => expect(engine.sessions[0]?.commands).toHaveLength(1));
+
+    engine.sessions[0]?.events.push({
+      type: "event",
+      sequence: 1,
+      epoch: "epoch-1",
+      event: { type: "fault", code: "malformedMessage", fatal: true },
+    });
+
+    await expect(run).rejects.toBeInstanceOf(EngineFaultError);
+    await expect(run).rejects.toMatchObject({ code: "malformedMessage" });
+    expect(engine.sessions).toHaveLength(1);
   });
 
   it("rejects a retired revision without retaining old document text", async () => {

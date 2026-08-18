@@ -1,7 +1,7 @@
 {
   "id": "refine",
   "name": "Refine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.5.0",
   "description": "Private, offline AI grammar, spelling, and fluency checks for Markdown notes on Mac.",
   "author": "Runjuu",

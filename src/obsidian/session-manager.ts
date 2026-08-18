@@ -9,6 +9,7 @@ import {
   IncompatibleProtocolError,
   type ProtocolVersion,
 } from "../transport/refine-transport";
+import { isIncompatibleEngineError } from "./compatibility";
 import { ObsidianWritingHost } from "./host";
 import type { ExplanationRenderer } from "./presentation";
 
@@ -19,6 +20,10 @@ export type ObsidianSessionState =
   | {
       readonly type: "failed";
       readonly reason: "unavailable";
+    }
+  | {
+      readonly type: "failed";
+      readonly reason: "incompatibleEngine";
     }
   | {
       readonly type: "failed";
@@ -89,16 +94,7 @@ export class ObsidianSessionManager {
       .run({ host, signal: controller.signal })
       .catch((error: unknown) => {
         if (!controller.signal.aborted && this.active === session) {
-          this.onStateChange(
-            error instanceof IncompatibleProtocolError
-              ? {
-                  type: "failed",
-                  reason: "incompatibleProtocol",
-                  clientProtocol: error.clientProtocol,
-                  serverProtocol: error.serverProtocol,
-                }
-              : { type: "failed", reason: "unavailable" },
-          );
+          this.onStateChange(failedSessionState(error));
           this.onError(error);
         }
       })
@@ -154,4 +150,21 @@ export class ObsidianSessionManager {
       this.onStateChange({ type: "inactive" });
     }
   }
+}
+
+function failedSessionState(
+  error: unknown,
+): Extract<ObsidianSessionState, { readonly type: "failed" }> {
+  if (error instanceof IncompatibleProtocolError) {
+    return {
+      type: "failed",
+      reason: "incompatibleProtocol",
+      clientProtocol: error.clientProtocol,
+      serverProtocol: error.serverProtocol,
+    };
+  }
+  if (isIncompatibleEngineError(error)) {
+    return { type: "failed", reason: "incompatibleEngine" };
+  }
+  return { type: "failed", reason: "unavailable" };
 }

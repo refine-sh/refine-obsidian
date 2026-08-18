@@ -44,7 +44,7 @@ describe("ObsidianWritingHost", () => {
           sources: [
             {
               sourceId: "document",
-              sourceSyntax: "markdownDocument",
+              sourceSyntax: "markdownDocumentHardLineBreaks",
               text: "[create an link](URL)or",
             },
           ],

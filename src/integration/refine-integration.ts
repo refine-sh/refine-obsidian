@@ -9,6 +9,7 @@ import {
 import type {
   ActionRejectionReason,
   ClientCommand,
+  FaultCode,
   PresentationContent,
   ServerEventEnvelope,
 } from "../transport/wire";
@@ -1139,7 +1140,7 @@ class IntegrationRun {
         return;
       case "fault":
         if (event.fatal) {
-          throw new FatalEngineError(`Refine engine fault: ${event.code}`);
+          throw new EngineFaultError(event.code);
         }
         if (event.code === "engineUnavailable") {
           await this.publishUnavailable("engineUnavailable");
@@ -2357,6 +2358,19 @@ function actionOutcomeForRejection(reason: ActionRejectionReason): ActionOutcome
 }
 
 class FatalEngineError extends Error {}
+
+/**
+ * A fatal fault Refine reported over the wire. `malformedMessage` means Refine
+ * could not read what this client sent, which an exact-version handshake cannot
+ * detect: Protocol 1.0 carries no feature discovery, so a Refine build older
+ * than this client accepts the handshake and only then rejects a command.
+ */
+export class EngineFaultError extends FatalEngineError {
+  constructor(readonly code: FaultCode) {
+    super(`Refine engine fault: ${code}`);
+    this.name = "EngineFaultError";
+  }
+}
 
 class FatalHostError extends Error {
   constructor(message: string, options?: ErrorOptions) {

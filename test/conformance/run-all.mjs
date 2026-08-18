@@ -14,6 +14,7 @@ const scenarios = [
   "reconnect-lost-state",
   "sequence-exhaustion",
   "invalid-server-inputs",
+  "markdown-hard-line-breaks",
 ];
 
 const configuredRoot = process.env.REFINE_PROTOCOL_ROOT;

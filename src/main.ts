@@ -13,7 +13,7 @@ import {
 import type { EditorView } from "@codemirror/view";
 
 import { createRefineIntegration } from "./integration/refine-integration";
-import { incompatibleProtocolNotice } from "./obsidian/compatibility";
+import { integrationFailureNotice } from "./obsidian/compatibility";
 import { ObsidianEditorRegistry } from "./obsidian/editor-registry";
 import {
   REFINE_MENU_BAR_ICON_ID,
@@ -31,10 +31,7 @@ import {
   statusMenuShowsCheckControls,
   statusMenuShowsManualCheck,
 } from "./obsidian/status-bar";
-import {
-  IncompatibleProtocolError,
-  RefineTransport,
-} from "./transport/refine-transport";
+import { RefineTransport } from "./transport/refine-transport";
 
 export default class RefinePlugin extends Plugin {
   private sessions: ObsidianSessionManager | undefined;
@@ -91,14 +88,7 @@ export default class RefinePlugin extends Plugin {
       },
       onError: (error) => {
         console.error("Refine integration stopped");
-        new Notice(
-          error instanceof IncompatibleProtocolError
-            ? incompatibleProtocolNotice(
-                error.clientProtocol,
-                error.serverProtocol,
-              )
-            : "Refine is unavailable. Make sure the Refine app is running.",
-        );
+        new Notice(integrationFailureNotice(error));
       },
       onStateChange: (state) => {
         this.statusState = statusBarStateForSession(state);

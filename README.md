@@ -71,6 +71,16 @@ demand, open the Command Palette and run **Refine: Check current note**.
 Suggestion colors, highlighting, automatic checks, local or hosted models, and
 Quick Apply shortcuts are configured in the Refine app.
 
+## Your line breaks stay put
+
+Refine never joins your lines. Every line break in a note stays exactly where
+you typed it: applying a suggestion never removes a line break, never adds one,
+and never rewraps your text across the lines you wrote.
+
+Prose you wrapped over several lines is still read as one paragraph, so Refine
+still catches a mistake that spans a line break. A correction that could not be
+made without moving a line break is not offered at all.
+
 ## Privacy and offline use
 
 The plugin sends the complete active Markdown note to the Refine app over a
@@ -109,6 +119,11 @@ in Obsidian's status bar to see the current connection state. The plugin
 reconnects automatically after Refine restarts. If the exact Integration
 Protocol versions differ, the plugin reports both versions and asks for a
 compatible Refine/plugin pair; it does not guess which component is newer.
+
+### Refine did not understand the plugin
+
+The installed Refine app cannot read what this plugin sends, which happens when
+Refine is older than the plugin. Update Refine for Mac, then reopen the note.
 
 ### No suggestions appear
 
