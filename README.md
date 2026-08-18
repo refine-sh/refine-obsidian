@@ -7,10 +7,10 @@
   </a>
 </p>
 
-<h1 align="center">Refine for Obsidian</h1>
+<h1 align="center">Refine: AI Grammar Checker for Obsidian</h1>
 
 <p align="center">
-  <strong>A local-first AI grammar checker and writing assistant for Obsidian on Mac.</strong>
+  <strong>An offline, local-first AI grammar checker and writing assistant for Obsidian on Mac, powered by a local LLM.</strong>
 </p>
 
 <p align="center">
