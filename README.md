@@ -7,7 +7,7 @@
   </a>
 </p>
 
-<h1 align="center">Refine for Obsidian: Local AI Grammar Checker</h1>
+<h1 align="center">Refine for Obsidian</h1>
 
 <p align="center">
   <strong>A local-first AI grammar checker and writing assistant for Obsidian on Mac.</strong>
@@ -95,6 +95,10 @@ The plugin sends the complete active Markdown note to the Refine app over a
 same-user Unix socket so Refine can check it. With a downloaded local model,
 the source and model response stay on your Mac, and writing checks can run
 without an internet connection after the model is downloaded.
+
+To find the running Refine app, the plugin reads a small endpoint descriptor
+file in `~/Library/Application Support/com.runjuu.refine/` outside your vault.
+It reads no other files outside the vault.
 
 Refine can also use hosted providers that you configure. In that case, requests
 from the Refine app—including note source—may go to the selected provider and
