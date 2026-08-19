@@ -1,6 +1,6 @@
 {
   "name": "refine-obsidian",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Check grammar, spelling, and fluency in Markdown notes offline with a local AI model on macOS.",
   "homepage": "https://refine.sh/",
   "repository": {
