@@ -1,6 +1,11 @@
 .refine-suggestion {
   position: relative;
-  text-decoration: none !important;
+}
+
+/* Editor-scoped so Obsidian's own text decorations lose on selector weight
+   instead of on !important. */
+.cm-editor .cm-content .refine-suggestion {
+  text-decoration: none;
 }
 
 .refine-suggestion--underline::after,
@@ -24,14 +29,19 @@
   );
 }
 
+/* Obsidian decorates Live Preview links through `.cm-underline`, including a
+   hover rule that adds a pseudo-class, so these selectors carry matching
+   weight and win on order rather than on !important. */
 .cm-editor .cm-content .refine-suggestion--underline .cm-underline,
-.cm-editor .cm-content .refine-suggestion--dashedUnderline .cm-underline {
-  text-decoration-line: none !important;
+.cm-editor .cm-content .refine-suggestion--dashedUnderline .cm-underline,
+.cm-editor .cm-content .refine-suggestion--underline .cm-underline:hover,
+.cm-editor .cm-content .refine-suggestion--dashedUnderline .cm-underline:hover {
+  text-decoration: none;
 }
 
 :is(.refine-suggestion, .refine-suggestion *)::spelling-error,
 :is(.refine-suggestion, .refine-suggestion *)::grammar-error {
-  text-decoration-line: none !important;
+  text-decoration: none;
 }
 
 .refine-suggestion--highlight {
@@ -150,7 +160,7 @@
   overflow: hidden;
   white-space: nowrap;
   border: 0;
-  clip-path: inset(50%);
+  clip: rect(0, 0, 0, 0);
 }
 
 .refine-tooltip__diff,
@@ -284,8 +294,7 @@
 .refine-tooltip__actions {
   display: flex;
   flex-wrap: wrap;
-  column-gap: var(--size-4-2);
-  row-gap: var(--size-4-1);
+  gap: var(--size-4-1) var(--size-4-2);
 }
 
 .refine-tooltip button.refine-tooltip__action {

@@ -793,11 +793,8 @@ describe("Obsidian presentation", () => {
       expect(rule(".refine-tooltip__header")?.style.gap).toBe(
         "var(--size-4-1)",
       );
-      expect(rule(".refine-tooltip__actions")?.style.columnGap).toBe(
-        "var(--size-4-2)",
-      );
-      expect(rule(".refine-tooltip__actions")?.style.rowGap).toBe(
-        "var(--size-4-1)",
+      expect(rule(".refine-tooltip__actions")?.style.gap).toBe(
+        "var(--size-4-1) var(--size-4-2)",
       );
       expect(rule(".refine-tooltip__explanation-section")?.style.gap).toBe(
         "var(--size-4-1)",
@@ -1896,7 +1893,6 @@ describe("Obsidian presentation", () => {
         const livePreviewComputed = getComputedStyle(livePreviewText!);
         const refineComputed = getComputedStyle(grammar!);
         expect(livePreviewComputed.color).toBe("rgb(118, 74, 188)");
-        expect(livePreviewComputed.textDecorationLine).toBe("none");
         expect(refineComputed.textDecorationLine).toBe("none");
         expect(refineComputed.getPropertyValue("--refine-suggestion-color")).toBe("#AABBCC");
 
@@ -1915,6 +1911,23 @@ describe("Obsidian presentation", () => {
           "var(--refine-suggestion-color)",
         );
         expect(sharedUnderlineRule?.style.borderRadius).toBe("999px");
+
+        // jsdom resolves neither the `text-decoration` shorthand against the
+        // longhand Live Preview sets nor selector weight, so the rule that
+        // neutralizes Live Preview underlines is read from the sheet instead of
+        // from the computed style.
+        const livePreviewResetRule = rules.find((rule) =>
+          rule.selectorText.includes(
+            `.refine-suggestion--${highlightStyle} .cm-underline`,
+          )
+        );
+        expect(livePreviewResetRule?.style.textDecoration).toBe("none");
+        expect(
+          livePreviewResetRule?.style.getPropertyPriority("text-decoration"),
+        ).toBe("");
+        expect(livePreviewResetRule?.selectorText).toContain(
+          `.cm-editor .cm-content .refine-suggestion--${highlightStyle} .cm-underline:hover`,
+        );
         if (highlightStyle === "dashedUnderline") {
           const dashedRule = rules.find((rule) =>
             rule.selectorText === ".refine-suggestion--dashedUnderline::after"
@@ -1992,7 +2005,8 @@ describe("Obsidian presentation", () => {
       expect(spellingRule?.selectorText).toContain(
         ":is(.refine-suggestion, .refine-suggestion *)::grammar-error",
       );
-      expect(spellingRule?.style.textDecorationLine).toBe("none");
+      expect(spellingRule?.style.textDecoration).toBe("none");
+      expect(spellingRule?.style.getPropertyPriority("text-decoration")).toBe("");
     } finally {
       style.remove();
     }

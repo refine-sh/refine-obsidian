@@ -30,10 +30,6 @@ Features:
 - Inline highlights and suggestion cards for reviewing changes in context
 - Clear explanations of why each change is suggested
 
-<!-- Demo GIF: replace this comment with:
-![Refine grammar checker for Obsidian showing an inline suggestion, explanation, and accepted correction](assets/refine-obsidian-demo.gif)
--->
-
 ## Requirements
 
 - macOS 14 or later
