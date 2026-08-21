@@ -4,7 +4,10 @@ import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EngineFaultError } from "../../src/integration/refine-integration";
+import {
+  createRefineIntegration,
+  EngineFaultError,
+} from "../../src/integration/refine-integration";
 import type {
   HostApplyRequest,
   HostObservation,
@@ -22,6 +25,16 @@ import {
   type ObsidianSessionState,
 } from "../../src/obsidian/session-manager";
 import { IncompatibleProtocolError } from "../../src/transport/refine-transport";
+import { FakeEngine, suggestionPresentation } from "../helpers/fake-engine";
+
+// The quick-apply activation used by the multi-pane test measures its tip
+// element; jsdom does not implement these range geometry APIs.
+if (typeof Range.prototype.getClientRects !== "function") {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+}
+if (typeof Range.prototype.getBoundingClientRect !== "function") {
+  Range.prototype.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
+}
 
 describe("ObsidianSessionManager", () => {
   const views: EditorView[] = [];
@@ -193,6 +206,118 @@ describe("ObsidianSessionManager", () => {
     } finally {
       firstManager.dispose();
       secondManager.dispose();
+    }
+  });
+
+  it("applies only to the addressed pane when one manager switches between two panes", async () => {
+    // Real seam: real ObsidianWritingHosts and EditorViews created by the
+    // manager, real integration; only the engine transport is faked.
+    const engine = new FakeEngine();
+    const manager = new ObsidianSessionManager({
+      integration: createRefineIntegration({ enginePort: engine }),
+    });
+    let otherPaneEdits = 0;
+    const otherView = createView("other pane note", [
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          otherPaneEdits += 1;
+        }
+      }),
+    ]);
+    let targetPaneEdits = 0;
+    const targetView = createView("create an link", [
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          targetPaneEdits += 1;
+        }
+      }),
+    ]);
+
+    try {
+      manager.activate(otherView, {});
+      await engine.waitForCommand("openDocument");
+
+      manager.activate(targetView, {});
+      const open = await engine.waitForCommand("openDocument", 2);
+      const revision = open.command.snapshot.revision;
+      expect(open.command.snapshot.sources[0]?.text).toBe("create an link");
+      targetView.dispatch({ selection: { anchor: 8 }, userEvent: "select" });
+      engine.emit({ type: "documentAccepted", revision }, open.id);
+      engine.emit(
+        suggestionPresentation("check-pane", "pane-suggestion", {
+          revision,
+          activationRange: { location: 7, length: 2 },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(
+          targetView.dom.querySelector(
+            ".refine-suggestion--quick-apply-active",
+          ),
+        ).not.toBeNull(),
+      );
+      expect(otherView.dom.querySelector(".refine-suggestion")).toBeNull();
+
+      targetView.contentDOM.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          code: "Tab",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      const perform = await engine.waitForCommand("performAction");
+      expect(perform.command.suggestion.id).toBe("pane-suggestion");
+
+      engine.emit({
+        type: "applyRequested",
+        actionId: perform.command.actionId,
+        transactionId: "pane-transaction",
+        request: {
+          expectedRevision: revision,
+          sourceId: "document",
+          edits: [
+            {
+              range: { location: 7, length: 2 },
+              expectedText: "an",
+              replacement: "a",
+            },
+          ],
+        },
+      });
+      await vi.waitFor(() =>
+        expect(engine.commandsOfType("completeApply")).toHaveLength(1),
+      );
+
+      expect(engine.commandsOfType("completeApply")[0]?.command).toEqual({
+        type: "completeApply",
+        transactionId: "pane-transaction",
+        outcome: {
+          status: "applied",
+          snapshot: {
+            revision: revision.replace(/:0$/, ":1"),
+            sources: [
+              {
+                sourceId: "document",
+                sourceSyntax: "markdownDocumentHardLineBreaks",
+                text: "create a link",
+              },
+            ],
+          },
+        },
+      });
+      expect(targetView.state.doc.toString()).toBe("create a link");
+      expect(targetPaneEdits).toBe(1);
+      // The pane the apply was not addressed to is untouched.
+      expect(otherView.state.doc.toString()).toBe("other pane note");
+      expect(otherPaneEdits).toBe(0);
+
+      engine.emit({
+        type: "actionCompleted",
+        actionId: perform.command.actionId,
+      });
+    } finally {
+      manager.dispose();
     }
   });
 

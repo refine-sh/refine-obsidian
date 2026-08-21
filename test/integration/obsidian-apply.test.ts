@@ -12,35 +12,27 @@ import type {
   HostApplyRequest,
   PresentationSnapshot,
   SuggestionActions,
-} from "../../src/integration/types";
-import {
-  DEFAULT_PRESENTATION_APPEARANCE,
-  DEFAULT_PRESENTATION_INTERACTION,
+  UTF16Range,
 } from "../../src/integration/types";
 import { ObsidianWritingHost } from "../../src/obsidian/host";
-import { AsyncQueue } from "../../src/shared/async-queue";
-import type {
-  CommandReceipt,
-  RefineTransportSession,
-} from "../../src/transport/refine-transport";
-import type {
-  ClientCommand,
-  ServerEventEnvelope,
-} from "../../src/transport/wire";
+import { FakeEngine, suggestionPresentation } from "../helpers/fake-engine";
 
-const TEST_ATTRIBUTION = {
-  languageDisplayName: "Synthetic",
-  textDirection: "ltr" as const,
-  checkModelDisplayName: "Fixture",
-};
-
+/**
+ * Cross-repo contract: each fixture mirrors a sanitized apply-failure
+ * telemetry report family (5, 20, and 21) from the Refine app. The
+ * `scenarioDigest` hex values are pinned on the app side at
+ * `RefineTests/Fixtures/ApplyFailures/integration-report-{5,20,21}.json`, so
+ * the two repositories must change a digest together or not at all.
+ */
 interface ApplyFixture {
+  /** Apply-failure telemetry report family this fixture mirrors. */
   readonly family: "5" | "20" | "21";
   readonly sessionId: string;
   readonly source: string;
   readonly request: Omit<HostApplyRequest, "expectedRevision">;
   readonly expected: string;
-  readonly activationRange: { readonly location: number; readonly length: number };
+  readonly activationRange: UTF16Range;
+  /** Pinned by the Refine app repo; see the contract note above. */
   readonly scenarioDigest: string;
 }
 
@@ -105,23 +97,32 @@ describe("Obsidian host-integration Apply", () => {
   it.each(applyFixtures)(
     "applies sanitized report family $family atomically and keeps one undo unit",
     async (fixture) => {
-      expect(integrationScenarioDigest(fixture)).toBe(
-        fixture.scenarioDigest,
-      );
       let documentTransactions = 0;
-      const view = createView(fixture.source, [
-        history(),
-        EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
-            documentTransactions += 1;
+      let insideEditorDispatch = false;
+      const view = createView(
+        fixture.source,
+        [
+          history(),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              documentTransactions += 1;
+            }
+          }),
+        ],
+        (transactions, editor) => {
+          insideEditorDispatch = true;
+          try {
+            editor.update(transactions);
+          } finally {
+            insideEditorDispatch = false;
           }
-        }),
-      ]);
+        },
+      );
       const host = new CapturingObsidianHost(view, {
         sessionId: fixture.sessionId,
       });
       const applyRequests = vi.spyOn(host, "apply");
-      const engine = new RecordingEngine();
+      const engine = new FakeEngine();
       const controller = new AbortController();
       const run = createRefineIntegration({ enginePort: engine }).run({
         host,
@@ -152,9 +153,12 @@ describe("Obsidian host-integration Apply", () => {
         );
         engine.emit(
           suggestionPresentation(
-            `${fixture.sessionId}:0`,
+            `check-report-family-${fixture.family}`,
             `report-family-${fixture.family}`,
-            fixture.activationRange,
+            {
+              revision: `${fixture.sessionId}:0`,
+              activationRange: fixture.activationRange,
+            },
           ),
         );
 
@@ -176,16 +180,22 @@ describe("Obsidian host-integration Apply", () => {
           expectedRevision: `${fixture.sessionId}:0`,
           ...fixture.request,
         };
-        engine.emit({
-          type: "applyRequested",
-          actionId: perform.command.actionId,
-          transactionId: `transaction-${fixture.family}`,
-          request,
-        });
-
-        await vi.waitFor(() =>
-          expect(engine.commandsOfType("completeApply")).toHaveLength(1),
-        );
+        // The native-write probe is live for the whole apply exchange so the
+        // digest's native counters are measured, not asserted by fiat.
+        const probe = installNativeWriteProbe(() => insideEditorDispatch);
+        try {
+          engine.emit({
+            type: "applyRequested",
+            actionId: perform.command.actionId,
+            transactionId: `transaction-${fixture.family}`,
+            request,
+          });
+          await vi.waitFor(() =>
+            expect(engine.commandsOfType("completeApply")).toHaveLength(1),
+          );
+        } finally {
+          probe.uninstall();
+        }
         expect(view.state.doc.toString()).toBe(fixture.expected);
         expect(documentTransactions).toBe(1);
         expect(engine.commandsOfType("completeApply")[0]?.command).toEqual({
@@ -206,13 +216,32 @@ describe("Obsidian host-integration Apply", () => {
           },
         });
 
+        // Scenario measurements, all read back from the run itself.
+        const completions = engine.commandsOfType("completeApply");
+        const completionOutcome = completions[0]?.command.outcome;
+        const documentMutationCount = documentTransactions;
+        const completionReceiptCount = completions.length;
+        const completionStatus = completionOutcome?.status ?? "missing";
+        const completionSnapshot =
+          completionOutcome !== undefined && "snapshot" in completionOutcome
+            ? completionOutcome.snapshot
+            : undefined;
+        const authoritativeChangedRevisionReadback =
+          completionSnapshot !== undefined &&
+          completionSnapshot.revision !== request.expectedRevision &&
+          (await host.validateRevision(completionSnapshot.revision)).status ===
+            "current";
+
         engine.emit({
           type: "actionCompleted",
           actionId: perform.command.actionId,
         });
         await expect(action).resolves.toEqual({ status: "completed" });
 
-        expect(undo(view)).toBe(true);
+        const undoApplied = undo(view);
+        const undoRestoresSource =
+          undoApplied && view.state.doc.toString() === fixture.source;
+        expect(undoApplied).toBe(true);
         expect(view.state.doc.toString()).toBe(fixture.source);
         expect(documentTransactions).toBe(2);
         await expect(host.validateRevision(`${fixture.sessionId}:0`)).resolves.toEqual({
@@ -228,7 +257,12 @@ describe("Obsidian host-integration Apply", () => {
           },
         });
 
-        await expect(host.apply(request)).resolves.toEqual({
+        const staleOutcome = await host.apply(request);
+        const staleRevisionRejected =
+          staleOutcome.status === "rejected" &&
+          staleOutcome.reason === "staleRevision" &&
+          view.state.doc.toString() === fixture.source;
+        expect(staleOutcome).toEqual({
           status: "rejected",
           reason: "staleRevision",
           snapshot: {
@@ -245,6 +279,19 @@ describe("Obsidian host-integration Apply", () => {
         expect(applyRequests).toHaveBeenCalledTimes(2);
         expect(view.state.doc.toString()).toBe(fixture.source);
         expect(documentTransactions).toBe(2);
+
+        expect(
+          integrationScenarioDigest(fixture, {
+            documentMutationCount,
+            completionReceiptCount,
+            authoritativeChangedRevisionReadback,
+            nativeSelectionWriteCount: probe.selectionWrites(),
+            nativePasteCount: probe.pastes(),
+            completionStatus,
+            undoRestoresSource,
+            staleRevisionRejected,
+          }),
+        ).toBe(fixture.scenarioDigest);
       } finally {
         controller.abort();
         await run;
@@ -283,7 +330,7 @@ describe("Obsidian host-integration Apply", () => {
       sessionId: "indeterminate",
     });
     const apply = vi.spyOn(host, "apply");
-    const engine = new RecordingEngine();
+    const engine = new FakeEngine();
     const controller = new AbortController();
     const run = createRefineIntegration({ enginePort: engine }).run({
       host,
@@ -298,9 +345,12 @@ describe("Obsidian host-integration Apply", () => {
       );
       engine.emit(
         suggestionPresentation(
-          "indeterminate:0",
+          "check-indeterminate-suggestion",
           "indeterminate-suggestion",
-          { location: 7, length: 2 },
+          {
+            revision: "indeterminate:0",
+            activationRange: { location: 7, length: 2 },
+          },
         ),
       );
       await vi.waitFor(() =>
@@ -385,7 +435,7 @@ describe("Obsidian host-integration Apply", () => {
     }
   });
 
-  it("restores Apply after a non-atomic host refusal without mutating or redispatching", async () => {
+  it("rejects an apply whose expected text disagrees with the live document", async () => {
     const source = "create an link";
     let documentTransactions = 0;
     const view = createView(source, [
@@ -395,11 +445,222 @@ describe("Obsidian host-integration Apply", () => {
         }
       }),
     ]);
-    const host = new NonAtomicObsidianHost(view, {
+    const host = new CapturingObsidianHost(view, { sessionId: "mismatch" });
+    const apply = vi.spyOn(host, "apply");
+    const engine = new FakeEngine();
+    const controller = new AbortController();
+    const run = createRefineIntegration({ enginePort: engine }).run({
+      host,
+      signal: controller.signal,
+    });
+
+    try {
+      const open = await engine.waitForCommand("openDocument");
+      engine.emit(
+        { type: "documentAccepted", revision: "mismatch:0" },
+        open.id,
+      );
+      engine.emit(
+        suggestionPresentation("check-mismatch", "mismatch-suggestion", {
+          revision: "mismatch:0",
+          activationRange: { location: 7, length: 2 },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(host.currentPresentation?.suggestions).toHaveLength(1),
+      );
+      const action = host.currentActions?.apply("mismatch-suggestion");
+      if (!action) {
+        throw new Error("expected an Apply action");
+      }
+      const perform = await engine.waitForCommand("performAction");
+
+      engine.emit({
+        type: "applyRequested",
+        actionId: perform.command.actionId,
+        transactionId: "mismatch-transaction",
+        request: {
+          expectedRevision: "mismatch:0",
+          sourceId: "document",
+          edits: [
+            {
+              // The live document reads "an" at this range; the engine's
+              // expectation disagrees, so the host must refuse to mutate.
+              range: { location: 7, length: 2 },
+              expectedText: "aa",
+              replacement: "a",
+            },
+          ],
+        },
+      });
+      await vi.waitFor(() =>
+        expect(engine.commandsOfType("completeApply")).toHaveLength(1),
+      );
+
+      expect(engine.commandsOfType("completeApply")[0]?.command).toEqual({
+        type: "completeApply",
+        transactionId: "mismatch-transaction",
+        outcome: {
+          status: "rejected",
+          reason: "textMismatch",
+          snapshot: {
+            revision: "mismatch:0",
+            sources: [
+              {
+                sourceId: "document",
+                sourceSyntax: "markdownDocumentHardLineBreaks",
+                text: source,
+              },
+            ],
+          },
+        },
+      });
+      expect(apply).toHaveBeenCalledOnce();
+      expect(view.state.doc.toString()).toBe(source);
+      expect(documentTransactions).toBe(0);
+
+      engine.emit({
+        type: "actionRejected",
+        actionId: perform.command.actionId,
+        reason: "applyNotProven",
+      });
+      await expect(action).resolves.toEqual({
+        status: "unavailable",
+        reason: "applyNotProven",
+      });
+    } finally {
+      controller.abort();
+      await run;
+      host.close();
+    }
+  });
+
+  it("rejects a stale apply after a user edit lands between presentation and apply", async () => {
+    const source = "create an link";
+    const editedSource = "Note: create an link";
+    let documentTransactions = 0;
+    const view = createView(source, [
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          documentTransactions += 1;
+        }
+      }),
+    ]);
+    const host = new CapturingObsidianHost(view, { sessionId: "concurrent" });
+    const apply = vi.spyOn(host, "apply");
+    const engine = new FakeEngine();
+    const controller = new AbortController();
+    const run = createRefineIntegration({ enginePort: engine }).run({
+      host,
+      signal: controller.signal,
+    });
+
+    try {
+      const open = await engine.waitForCommand("openDocument");
+      engine.emit(
+        { type: "documentAccepted", revision: "concurrent:0" },
+        open.id,
+      );
+      engine.emit(
+        suggestionPresentation("check-concurrent", "concurrent-suggestion", {
+          revision: "concurrent:0",
+          activationRange: { location: 7, length: 2 },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(host.currentPresentation?.suggestions).toHaveLength(1),
+      );
+      const action = host.currentActions?.apply("concurrent-suggestion");
+      if (!action) {
+        throw new Error("expected an Apply action");
+      }
+      const perform = await engine.waitForCommand("performAction");
+
+      // A genuine user edit between presentation and apply advances the
+      // authoritative revision before the engine's apply request arrives.
+      view.dispatch({
+        changes: { from: 0, insert: "Note: " },
+        userEvent: "input.type",
+      });
+      expect(view.state.doc.toString()).toBe(editedSource);
+      const replace = await engine.waitForCommand("replaceDocument");
+      expect(replace.command.snapshot).toEqual({
+        revision: "concurrent:1",
+        sources: [
+          {
+            sourceId: "document",
+            sourceSyntax: "markdownDocumentHardLineBreaks",
+            text: editedSource,
+          },
+        ],
+      });
+      await expect(action).resolves.toEqual({ status: "stale" });
+
+      engine.emit({
+        type: "applyRequested",
+        actionId: perform.command.actionId,
+        transactionId: "concurrent-transaction",
+        request: {
+          expectedRevision: "concurrent:0",
+          sourceId: "document",
+          edits: [
+            {
+              range: { location: 7, length: 2 },
+              expectedText: "an",
+              replacement: "a",
+            },
+          ],
+        },
+      });
+      await vi.waitFor(() =>
+        expect(engine.commandsOfType("completeApply")).toHaveLength(1),
+      );
+
+      expect(engine.commandsOfType("completeApply")[0]?.command).toEqual({
+        type: "completeApply",
+        transactionId: "concurrent-transaction",
+        outcome: {
+          status: "rejected",
+          reason: "staleRevision",
+          snapshot: {
+            revision: "concurrent:1",
+            sources: [
+              {
+                sourceId: "document",
+                sourceSyntax: "markdownDocumentHardLineBreaks",
+                text: editedSource,
+              },
+            ],
+          },
+        },
+      });
+      // No fuzzy relocation: the host is never asked to mutate, and the
+      // user's edit is preserved verbatim.
+      expect(apply).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe(editedSource);
+      expect(documentTransactions).toBe(1);
+    } finally {
+      controller.abort();
+      await run;
+      host.close();
+    }
+  });
+
+  it("maps a host's unsupported nonAtomic refusal to the completeApply failure receipt", async () => {
+    const source = "create an link";
+    let documentTransactions = 0;
+    const view = createView(source, [
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          documentTransactions += 1;
+        }
+      }),
+    ]);
+    const host = new NonAtomicRefusingHostStub(view, {
       sessionId: "non-atomic",
     });
     const apply = vi.spyOn(host, "apply");
-    const engine = new RecordingEngine();
+    const engine = new FakeEngine();
     const controller = new AbortController();
     const run = createRefineIntegration({ enginePort: engine }).run({
       host,
@@ -414,9 +675,12 @@ describe("Obsidian host-integration Apply", () => {
       );
       engine.emit(
         suggestionPresentation(
-          "non-atomic:0",
+          "check-non-atomic-suggestion",
           "non-atomic-suggestion",
-          { location: 7, length: 2 },
+          {
+            revision: "non-atomic:0",
+            activationRange: { location: 7, length: 2 },
+          },
         ),
       );
       await vi.waitFor(() =>
@@ -462,6 +726,10 @@ describe("Obsidian host-integration Apply", () => {
         transactionId: "non-atomic-transaction",
         outcome: { status: "unsupported", reason: "nonAtomic" },
       });
+      // Mapping-side assertions only: the stub host never mutates, so these
+      // verify that the integration layer adds no mutation or host
+      // redispatch of its own around the refusal — not the real host's
+      // refusal behavior.
       expect(apply).toHaveBeenCalledOnce();
       expect(view.state.doc.toString()).toBe(source);
       expect(documentTransactions).toBe(0);
@@ -486,6 +754,107 @@ describe("Obsidian host-integration Apply", () => {
       expect(apply).toHaveBeenCalledOnce();
       expect(view.state.doc.toString()).toBe(source);
       expect(documentTransactions).toBe(0);
+    } finally {
+      controller.abort();
+      await run;
+      host.close();
+    }
+  });
+
+  it("maps a read-only surface refusal through the integration to a completeApply failure", async () => {
+    const source = "synthetic draft";
+    let documentTransactions = 0;
+    const view = createView(source, [
+      EditorView.editable.of(false),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          documentTransactions += 1;
+        }
+      }),
+    ]);
+    const host = new CapturingObsidianHost(view, {
+      sessionId: "read-only-seam",
+    });
+    const apply = vi.spyOn(host, "apply");
+    const engine = new FakeEngine();
+    const controller = new AbortController();
+    const run = createRefineIntegration({ enginePort: engine }).run({
+      host,
+      signal: controller.signal,
+    });
+
+    try {
+      const open = await engine.waitForCommand("openDocument");
+      engine.emit(
+        { type: "documentAccepted", revision: "read-only-seam:0" },
+        open.id,
+      );
+      engine.emit(
+        suggestionPresentation("check-read-only", "read-only-suggestion", {
+          revision: "read-only-seam:0",
+          activationRange: { location: 10, length: 5 },
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(host.currentPresentation?.suggestions).toHaveLength(1),
+      );
+      const action = host.currentActions?.apply("read-only-suggestion");
+      if (!action) {
+        throw new Error("expected an Apply action");
+      }
+      const perform = await engine.waitForCommand("performAction");
+
+      engine.emit({
+        type: "applyRequested",
+        actionId: perform.command.actionId,
+        transactionId: "read-only-transaction",
+        request: {
+          expectedRevision: "read-only-seam:0",
+          sourceId: "document",
+          edits: [
+            {
+              range: { location: 10, length: 5 },
+              expectedText: "draft",
+              replacement: "revision",
+            },
+          ],
+        },
+      });
+      await vi.waitFor(() =>
+        expect(engine.commandsOfType("completeApply")).toHaveLength(1),
+      );
+
+      expect(engine.commandsOfType("completeApply")[0]?.command).toEqual({
+        type: "completeApply",
+        transactionId: "read-only-transaction",
+        outcome: {
+          status: "unsupported",
+          reason: "readOnly",
+          snapshot: {
+            revision: "read-only-seam:0",
+            sources: [
+              {
+                sourceId: "document",
+                sourceSyntax: "markdownDocumentHardLineBreaks",
+                text: source,
+              },
+            ],
+          },
+        },
+      });
+      expect(apply).toHaveBeenCalledOnce();
+      expect(view.state.doc.toString()).toBe(source);
+      expect(documentTransactions).toBe(0);
+
+      engine.emit({
+        type: "actionRejected",
+        actionId: perform.command.actionId,
+        reason: "readOnly",
+      });
+      await expect(action).resolves.toEqual({
+        status: "unavailable",
+        reason: "readOnly",
+      });
     } finally {
       controller.abort();
       await run;
@@ -575,110 +944,14 @@ class CapturingObsidianHost extends ObsidianWritingHost {
   }
 }
 
-class NonAtomicObsidianHost extends CapturingObsidianHost {
+// The production ObsidianWritingHost has no nonAtomic path and never emits
+// unsupported(nonAtomic). This stub cans the refusal so the test above can
+// exercise only the integration-layer mapping seam from a host refusal to
+// the engine receipt; it is not verification of the real host.
+class NonAtomicRefusingHostStub extends CapturingObsidianHost {
   override apply(_request: HostApplyRequest): Promise<HostApplyOutcome> {
     return Promise.resolve({ status: "unsupported", reason: "nonAtomic" });
   }
-}
-
-class RecordingEngine {
-  readonly commands: { readonly command: ClientCommand; readonly id: string }[] = [];
-  private readonly events = new AsyncQueue<ServerEventEnvelope>();
-  private commandSequence = 0;
-  private eventSequence = 0;
-
-  connect(): Promise<RefineTransportSession> {
-    return Promise.resolve({
-      serverEpoch: "synthetic-epoch",
-      runResumed: false,
-      activatedCapabilities: [],
-      send: async (command, commandId): Promise<CommandReceipt> => {
-        this.commandSequence += 1;
-        const id = commandId ?? `command-${this.commandSequence}`;
-        this.commands.push({ command, id });
-        return { sequence: this.commandSequence, id };
-      },
-      events: () => this.events,
-      close: async () => this.events.close(),
-    });
-  }
-
-  emit(
-    event: ServerEventEnvelope["event"],
-    causeCommandId?: string,
-  ): void {
-    this.eventSequence += 1;
-    this.events.push({
-      type: "event",
-      sequence: this.eventSequence,
-      epoch: "synthetic-epoch",
-      ...(causeCommandId === undefined ? {} : { causeCommandId }),
-      event,
-    });
-  }
-
-  commandsOfType<T extends ClientCommand["type"]>(
-    type: T,
-  ): readonly {
-    readonly command: Extract<ClientCommand, { readonly type: T }>;
-    readonly id: string;
-  }[] {
-    return this.commands.filter(
-      (
-        command,
-      ): command is {
-        readonly command: Extract<ClientCommand, { readonly type: T }>;
-        readonly id: string;
-      } => command.command.type === type,
-    );
-  }
-
-  async waitForCommand<T extends ClientCommand["type"]>(
-    type: T,
-  ): Promise<{
-    readonly command: Extract<ClientCommand, { readonly type: T }>;
-    readonly id: string;
-  }> {
-    await vi.waitFor(() => expect(this.commandsOfType(type)).toHaveLength(1));
-    const command = this.commandsOfType(type)[0];
-    if (!command) {
-      throw new Error(`expected ${type} command`);
-    }
-    return command;
-  }
-}
-
-function suggestionPresentation(
-  revision: string,
-  suggestionId: string,
-  activationRange: { readonly location: number; readonly length: number },
-): Extract<
-  ServerEventEnvelope["event"],
-  { readonly type: "presentationContentReplaced" }
-> {
-  return {
-    type: "presentationContentReplaced",
-    checkId: `check-${suggestionId}`,
-    content: {
-      documentRevision: revision,
-      status: "complete",
-      coverage: "full",
-      appearance: DEFAULT_PRESENTATION_APPEARANCE,
-      interaction: DEFAULT_PRESENTATION_INTERACTION,
-      suggestions: [
-        {
-          id: suggestionId,
-          sourceId: "document",
-          kind: "grammar",
-          attribution: TEST_ATTRIBUTION,
-          activationRange,
-          highlightRanges: [activationRange],
-          diff: [],
-          availableActions: ["apply"],
-        },
-      ],
-    },
-  };
 }
 
 function syntheticRangeFixture(input: {
@@ -724,7 +997,28 @@ function syntheticRangeFixture(input: {
   };
 }
 
-function integrationScenarioDigest(fixture: ApplyFixture): string {
+/** Observations gathered while the fixture's apply scenario actually ran. */
+interface IntegrationApplyMeasurements {
+  readonly documentMutationCount: number;
+  readonly completionReceiptCount: number;
+  readonly authoritativeChangedRevisionReadback: boolean;
+  readonly nativeSelectionWriteCount: number;
+  readonly nativePasteCount: number;
+  readonly completionStatus: string;
+  readonly undoRestoresSource: boolean;
+  readonly staleRevisionRejected: boolean;
+}
+
+/**
+ * Folds the fixture geometry and the measured run outcomes into the
+ * cross-repo scenario digest. Every trailing line is derived from what the
+ * test observed during the run, so the digest reproduces the pinned hex only
+ * when the run genuinely behaved as attested.
+ */
+function integrationScenarioDigest(
+  fixture: ApplyFixture,
+  measurements: IntegrationApplyMeasurements,
+): string {
   const lines = [
     "refine-integration-apply-scenario-v1",
     `caseID=report-family-${fixture.family}`,
@@ -751,14 +1045,14 @@ function integrationScenarioDigest(fixture: ApplyFixture): string {
   });
   lines.push(
     `finalUTF16Length=${fixture.expected.length}`,
-    "documentMutationCount=1",
-    "completionReceiptCount=1",
-    "authoritativeChangedRevisionReadback=true",
-    "nativeSelectionWriteCount=0",
-    "nativePasteCount=0",
-    "completionStatus=applied",
-    "undoRestoresSource=true",
-    "staleRevisionRejected=true",
+    `documentMutationCount=${measurements.documentMutationCount}`,
+    `completionReceiptCount=${measurements.completionReceiptCount}`,
+    `authoritativeChangedRevisionReadback=${measurements.authoritativeChangedRevisionReadback}`,
+    `nativeSelectionWriteCount=${measurements.nativeSelectionWriteCount}`,
+    `nativePasteCount=${measurements.nativePasteCount}`,
+    `completionStatus=${measurements.completionStatus}`,
+    `undoRestoresSource=${measurements.undoRestoresSource}`,
+    `staleRevisionRejected=${measurements.staleRevisionRejected}`,
   );
   return createHash("sha256").update(lines.join("\n")).digest("hex");
 }
@@ -770,4 +1064,118 @@ function normalizedUTF16Hex(text: string, token: "e" | "r"): string {
     result += normalized.charCodeAt(index).toString(16).padStart(4, "0");
   }
   return result;
+}
+
+interface NativeWriteProbe {
+  readonly selectionWrites: () => number;
+  readonly pastes: () => number;
+  readonly uninstall: () => void;
+}
+
+const SELECTION_MUTATORS = [
+  "addRange",
+  "collapse",
+  "collapseToEnd",
+  "collapseToStart",
+  "deleteFromDocument",
+  "empty",
+  "extend",
+  "removeAllRanges",
+  "removeRange",
+  "selectAllChildren",
+  "setBaseAndExtent",
+  "setPosition",
+] as const;
+
+/**
+ * Measures the native editing side channels an Apply is attested not to use:
+ * DOM Selection mutation APIs, `document.execCommand`, and paste-event
+ * dispatch. Selection writes CodeMirror performs while flushing the host's
+ * own transaction dispatch are excluded — the contract under test is that
+ * Apply mutates the document through exactly one CodeMirror transaction and
+ * never through native selection writes or paste emulation. This is the
+ * strongest honest measurement jsdom allows; real WebViews add input-event
+ * channels jsdom does not implement.
+ */
+function installNativeWriteProbe(
+  isInsideEditorDispatch: () => boolean,
+): NativeWriteProbe {
+  let selectionWrites = 0;
+  let pastes = 0;
+  const restorers: (() => void)[] = [];
+
+  const selectionPrototype =
+    typeof Selection === "undefined"
+      ? undefined
+      : (Selection.prototype as unknown as Record<string, unknown>);
+  if (selectionPrototype) {
+    for (const method of SELECTION_MUTATORS) {
+      const original = selectionPrototype[method];
+      if (typeof original !== "function") {
+        continue;
+      }
+      selectionPrototype[method] = function (
+        this: unknown,
+        ...args: unknown[]
+      ): unknown {
+        if (!isInsideEditorDispatch()) {
+          selectionWrites += 1;
+        }
+        return (original as (...inner: unknown[]) => unknown).apply(this, args);
+      };
+      restorers.push(() => {
+        selectionPrototype[method] = original;
+      });
+    }
+  }
+
+  const documentRecord = document as unknown as Record<string, unknown>;
+  const originalExecCommand = documentRecord["execCommand"];
+  documentRecord["execCommand"] = (...args: unknown[]): boolean => {
+    const [commandId] = args;
+    if (!isInsideEditorDispatch()) {
+      if (typeof commandId === "string" && commandId.toLowerCase() === "paste") {
+        pastes += 1;
+      } else {
+        // Non-paste commands still count: execCommand is a native write
+        // channel that bypasses the CodeMirror transaction seam either way.
+        selectionWrites += 1;
+      }
+    }
+    return typeof originalExecCommand === "function"
+      ? Boolean(
+          (originalExecCommand as (...inner: unknown[]) => unknown).apply(
+            document,
+            args,
+          ),
+        )
+      : false;
+  };
+  restorers.push(() => {
+    if (originalExecCommand === undefined) {
+      Reflect.deleteProperty(documentRecord, "execCommand");
+    } else {
+      documentRecord["execCommand"] = originalExecCommand;
+    }
+  });
+
+  const countPaste = (): void => {
+    pastes += 1;
+  };
+  // Capture phase, so a synthesized paste is counted even when a handler
+  // stops its propagation before it bubbles.
+  document.addEventListener("paste", countPaste, true);
+  restorers.push(() => {
+    document.removeEventListener("paste", countPaste, true);
+  });
+
+  return {
+    selectionWrites: () => selectionWrites,
+    pastes: () => pastes,
+    uninstall: () => {
+      for (const restore of restorers.splice(0).reverse()) {
+        restore();
+      }
+    },
+  };
 }

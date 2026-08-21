@@ -33,6 +33,11 @@ import type {
   ClientCommand,
   ServerEventEnvelope,
 } from "../../src/transport/wire";
+import {
+  FakeEngine,
+  suggestionPresentation,
+  TEST_ATTRIBUTION,
+} from "../helpers/fake-engine";
 
 vi.mock("../../src/shared/unicode-scalar-boundaries", async (importOriginal) => {
   const original = await importOriginal<
@@ -43,12 +48,6 @@ vi.mock("../../src/shared/unicode-scalar-boundaries", async (importOriginal) => 
     unicodeScalarBoundaries: vi.fn(original.unicodeScalarBoundaries),
   };
 });
-
-const TEST_ATTRIBUTION = {
-  languageDisplayName: "English (American)",
-  textDirection: "ltr" as const,
-  checkModelDisplayName: "On-Device (Gemma)",
-};
 
 describe("RefineIntegration", () => {
   it("opens canonical source, presents engine results, and completes Apply exactly once", async () => {
@@ -4592,81 +4591,6 @@ class FakeSession {
   }
 }
 
-class FakeEngine {
-  readonly commands: { command: ClientCommand; id: string }[] = [];
-  readonly eventQueue = new AsyncQueue<ServerEventEnvelope>();
-  eventsRead = 0;
-  closes = 0;
-  private commandSequence = 0;
-  private eventSequence = 0;
-  private blockedSend:
-    | {
-        readonly type: ClientCommand["type"];
-        readonly promise: Promise<void>;
-        readonly release: () => void;
-      }
-    | undefined;
-
-  blockNextSend(type: ClientCommand["type"]): () => void {
-    let release: (() => void) | undefined;
-    const promise = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const blocked = {
-      type,
-      promise,
-      release: () => release?.(),
-    };
-    this.blockedSend = blocked;
-    return blocked.release;
-  }
-
-  connect(): Promise<RefineTransportSession> {
-    return Promise.resolve({
-      serverEpoch: "epoch-1",
-      runResumed: false,
-      activatedCapabilities: [],
-      send: async (command, commandId): Promise<CommandReceipt> => {
-        this.commandSequence += 1;
-        const id = commandId ?? `command-${this.commandSequence}`;
-        this.commands.push({ command, id });
-        if (this.blockedSend?.type === command.type) {
-          const blocked = this.blockedSend;
-          this.blockedSend = undefined;
-          await blocked.promise;
-        }
-        return { sequence: this.commandSequence, id };
-      },
-      events: () => this.readEvents(),
-      close: async () => {
-        this.closes += 1;
-        this.eventQueue.close();
-      },
-    });
-  }
-
-  emit(
-    event: ServerEventEnvelope["event"],
-    causeCommandId?: string,
-  ): void {
-    this.eventSequence += 1;
-    this.eventQueue.push({
-      type: "event",
-      sequence: this.eventSequence,
-      epoch: "epoch-1",
-      ...(causeCommandId === undefined ? {} : { causeCommandId }),
-      event,
-    });
-  }
-
-  private async *readEvents(): AsyncIterable<ServerEventEnvelope> {
-    for await (const event of this.eventQueue) {
-      this.eventsRead += 1;
-      yield event;
-    }
-  }
-}
-
 function snapshot(revision: string, text: string): DocumentSnapshot {
   return {
     revision,
@@ -4682,38 +4606,6 @@ async function settleMicrotasksUntil(predicate: () => boolean): Promise<void> {
     await Promise.resolve();
   }
   throw new Error("condition did not settle through queued microtasks");
-}
-
-function suggestionPresentation(
-  checkId: string,
-  suggestionId: string,
-): Extract<
-  ServerEventEnvelope["event"],
-  { readonly type: "presentationContentReplaced" }
-> {
-  return {
-    type: "presentationContentReplaced",
-    checkId,
-    content: {
-      documentRevision: "doc:0",
-      status: "complete",
-      coverage: "full",
-      appearance: DEFAULT_PRESENTATION_APPEARANCE,
-      interaction: DEFAULT_PRESENTATION_INTERACTION,
-      suggestions: [
-        {
-          id: suggestionId,
-          sourceId: "document",
-          kind: "grammar",
-          attribution: TEST_ATTRIBUTION,
-          activationRange: { location: 7, length: 2 },
-          highlightRanges: [{ location: 7, length: 2 }],
-          diff: [],
-          availableActions: ["apply"],
-        },
-      ],
-    },
-  };
 }
 
 function checkingLifecyclePresentation(
