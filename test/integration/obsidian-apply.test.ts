@@ -19,14 +19,16 @@ import { FakeEngine, suggestionPresentation } from "../helpers/fake-engine";
 
 /**
  * Cross-repo contract: each fixture mirrors a sanitized apply-failure
- * telemetry report family (5, 20, and 21) from the Refine app. The
+ * telemetry report family (5, 20, 21, and 27/28) from the Refine app. The
  * `scenarioDigest` hex values are pinned on the app side at
- * `RefineTests/Fixtures/ApplyFailures/integration-report-{5,20,21}.json`, so
+ * `RefineTests/Fixtures/ApplyFailures/integration-report-{5,20,21,27}.json`, so
  * the two repositories must change a digest together or not at all.
+ * Reports 27 and 28 are duplicate captures, so family 27 is their one
+ * canonical host-integration scenario.
  */
 interface ApplyFixture {
   /** Apply-failure telemetry report family this fixture mirrors. */
-  readonly family: "5" | "20" | "21";
+  readonly family: "5" | "20" | "21" | "27";
   readonly sessionId: string;
   readonly source: string;
   readonly request: Omit<HostApplyRequest, "expectedRevision">;
@@ -80,6 +82,16 @@ const applyFixtures: readonly ApplyFixture[] = [
     prefixSeed: "## Synthetic e\u0301\n",
     scenarioDigest:
       "6a969bfb3951cad76b729a083876a512452d0f56884c2a07ef9a2377b2f96282",
+  }),
+  syntheticRangeFixture({
+    family: "27",
+    sourceLength: 30,
+    location: 8,
+    length: 22,
+    replacementLength: 22,
+    prefixSeed: "# 😀\n",
+    scenarioDigest:
+      "651d99f199f2fa9a735acddceb918be68c5754dbe64d7cef366c931598db5b63",
   }),
 ];
 
@@ -955,7 +967,7 @@ class NonAtomicRefusingHostStub extends CapturingObsidianHost {
 }
 
 function syntheticRangeFixture(input: {
-  readonly family: "20" | "21";
+  readonly family: "20" | "21" | "27";
   readonly sourceLength: number;
   readonly location: number;
   readonly length: number;
