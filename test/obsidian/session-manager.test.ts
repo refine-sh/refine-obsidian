@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EngineFaultError } from "../../src/integration/refine-integration";
 import type {
+  HostApplyRequest,
   HostObservation,
   PresentationSnapshot,
   RefineIntegration,
@@ -52,6 +53,147 @@ describe("ObsidianSessionManager", () => {
 
     manager.dispose();
     expect(integration.runs[1]?.signal.aborted).toBe(true);
+  });
+
+  it("isolates revisions, Apply, and cleanup across independent windows and vaults", async () => {
+    const firstIntegration = new RecordingIntegration();
+    const secondIntegration = new RecordingIntegration();
+    const firstManager = new ObsidianSessionManager({
+      integration: firstIntegration,
+    });
+    const secondManager = new ObsidianSessionManager({
+      integration: secondIntegration,
+    });
+    const firstView = createView("first vault");
+    const secondView = createView("second vault");
+    const firstDocument = {};
+    const secondDocument = {};
+
+    try {
+      firstManager.activate(firstView, firstDocument);
+      secondManager.activate(secondView, secondDocument);
+      await vi.waitFor(() => {
+        expect(firstIntegration.observations[0]?.type).toBe("snapshot");
+        expect(secondIntegration.observations[0]?.type).toBe("snapshot");
+      });
+      const firstRun = firstIntegration.runs[0];
+      const secondRun = secondIntegration.runs[0];
+      const firstObservation = firstIntegration.observations[0];
+      const secondObservation = secondIntegration.observations[0];
+      if (
+        !firstRun ||
+        !secondRun ||
+        firstObservation?.type !== "snapshot" ||
+        secondObservation?.type !== "snapshot"
+      ) {
+        throw new Error("expected two independent document snapshots");
+      }
+      const firstRevision = firstObservation.snapshot.revision;
+      const secondRevision = secondObservation.snapshot.revision;
+      const firstSessionId = sessionId(firstRevision);
+      const secondSessionId = sessionId(secondRevision);
+      expect(firstRevision).toBe(`${firstSessionId}:0`);
+      expect(secondRevision).toBe(`${secondSessionId}:0`);
+      expect(firstSessionId).not.toBe(secondSessionId);
+
+      const firstRequest: HostApplyRequest = {
+        expectedRevision: firstRevision,
+        sourceId: "document",
+        edits: [
+          {
+            range: { location: 0, length: 5 },
+            expectedText: "first",
+            replacement: "alpha",
+          },
+        ],
+      };
+      const secondRequest: HostApplyRequest = {
+        expectedRevision: secondRevision,
+        sourceId: "document",
+        edits: [
+          {
+            range: { location: 0, length: 6 },
+            expectedText: "second",
+            replacement: "beta",
+          },
+        ],
+      };
+
+      await expect(
+        secondRun.host.apply({
+          ...secondRequest,
+          expectedRevision: firstRevision,
+        }),
+      ).resolves.toEqual({
+        status: "rejected",
+        reason: "staleRevision",
+        snapshot: secondObservation.snapshot,
+      });
+      expect(firstView.state.doc.toString()).toBe("first vault");
+      expect(secondView.state.doc.toString()).toBe("second vault");
+
+      await expect(firstRun.host.apply(firstRequest)).resolves.toEqual({
+        status: "applied",
+        snapshot: {
+          revision: `${firstSessionId}:1`,
+          sources: [
+            {
+              sourceId: "document",
+              sourceSyntax: "markdownDocumentHardLineBreaks",
+              text: "alpha vault",
+            },
+          ],
+        },
+      });
+      expect(firstView.state.doc.toString()).toBe("alpha vault");
+      expect(secondView.state.doc.toString()).toBe("second vault");
+
+      await expect(secondRun.host.apply(secondRequest)).resolves.toEqual({
+        status: "applied",
+        snapshot: {
+          revision: `${secondSessionId}:1`,
+          sources: [
+            {
+              sourceId: "document",
+              sourceSyntax: "markdownDocumentHardLineBreaks",
+              text: "beta vault",
+            },
+          ],
+        },
+      });
+      expect(firstView.state.doc.toString()).toBe("alpha vault");
+      expect(secondView.state.doc.toString()).toBe("beta vault");
+
+      await firstRun.host.present(
+        completePresentation(`${firstSessionId}:1`),
+        inertActions(),
+      );
+      await secondRun.host.present(
+        completePresentation(`${secondSessionId}:1`),
+        inertActions(),
+      );
+      expect(firstView.dom.querySelector(".refine-suggestion")).not.toBeNull();
+      expect(secondView.dom.querySelector(".refine-suggestion")).not.toBeNull();
+
+      firstManager.dispose();
+      expect(firstRun.signal.aborted).toBe(true);
+      expect(secondRun.signal.aborted).toBe(false);
+      expect(firstView.dom.querySelector(".refine-suggestion")).toBeNull();
+      expect(secondView.dom.querySelector(".refine-suggestion")).not.toBeNull();
+      await expect(firstRun.host.apply(firstRequest)).resolves.toEqual({
+        status: "unavailable",
+      });
+      await expect(
+        secondRun.host.validateRevision(`${secondSessionId}:1`),
+      ).resolves.toEqual({ status: "current" });
+
+      secondManager.dispose();
+      expect(secondRun.signal.aborted).toBe(true);
+      expect(secondView.dom.querySelector(".refine-suggestion")).toBeNull();
+    } finally {
+      firstManager.dispose();
+      secondManager.dispose();
+    }
   });
 
   it("starts a new document run when Obsidian reuses the active editor view", async () => {
@@ -426,4 +568,12 @@ function inertActions(): SuggestionActions {
     },
     report: async () => ({ status: "completed" }),
   };
+}
+
+function sessionId(revision: string): string {
+  const separator = revision.lastIndexOf(":");
+  if (separator <= 0) {
+    throw new Error(`expected session-scoped revision, received ${revision}`);
+  }
+  return revision.slice(0, separator);
 }
