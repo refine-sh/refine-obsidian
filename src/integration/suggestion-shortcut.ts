@@ -1,3 +1,4 @@
+import { isModifierGesture, gestureKeys, type SuggestionBinding } from "./suggestion-binding";
 import type { SuggestionActionKey } from "./types";
 
 export const SUGGESTION_SHORTCUT_CAPABILITY = "com.runjuu.refine.suggestion-shortcuts.v1";
@@ -29,9 +30,9 @@ export function isSuggestionShortcut(value: unknown): value is SuggestionShortcu
 
 export function effectiveSuggestionShortcut(
   configuration: { readonly applyKey: SuggestionActionKey; readonly dismissKey: SuggestionActionKey;
-    readonly applyShortcut?: SuggestionShortcut; readonly dismissShortcut?: SuggestionShortcut },
+    readonly applyShortcut?: SuggestionShortcut | SuggestionBinding; readonly dismissShortcut?: SuggestionShortcut | SuggestionBinding },
   action: "apply" | "dismiss",
-): SuggestionActionKey | SuggestionShortcut {
+): SuggestionActionKey | SuggestionShortcut | SuggestionBinding {
   return action === "apply" ? configuration.applyShortcut ?? configuration.applyKey
     : configuration.dismissShortcut ?? configuration.dismissKey;
 }
@@ -44,13 +45,27 @@ export function suggestionShortcutsConflict(configuration: Parameters<typeof eff
     leftShift: "ShiftLeft", rightShift: "ShiftRight", leftOption: "AltLeft", rightOption: "AltRight",
     leftControl: "ControlLeft", rightControl: "ControlRight",
   };
-  const identity = (action: "apply" | "dismiss"): Pick<SuggestionShortcut, "code" | "modifiers"> => {
+  const identity = (action: "apply" | "dismiss") => {
     const shortcut = effectiveSuggestionShortcut(configuration, action);
-    return typeof shortcut === "string" ? { code: codes[shortcut], modifiers: [] } : shortcut;
+    return typeof shortcut === "string" ? { code: codes[shortcut], modifiers: [] as readonly ShortcutModifier[] } : shortcut;
   };
   const apply = identity("apply");
   const dismiss = identity("dismiss");
-  const prefix = (one: typeof apply, other: typeof apply): boolean => {
+  const applyGesture = "kind" in apply && isModifierGesture(apply) ? apply : undefined;
+  const dismissGesture = "kind" in dismiss && isModifierGesture(dismiss) ? dismiss : undefined;
+  if (applyGesture && dismissGesture) {
+    return applyGesture.kind === dismissGesture.kind &&
+      gestureKeys(applyGesture).length === gestureKeys(dismissGesture).length &&
+      gestureKeys(applyGesture).every((key) => gestureKeys(dismissGesture).includes(key));
+  }
+  if (applyGesture || dismissGesture) {
+    const gesture = applyGesture ?? dismissGesture;
+    const key = applyGesture ? dismiss : apply;
+    return gesture !== undefined && "code" in key && key.modifiers.length === 0 &&
+      gestureKeys(gesture).some((physical) => physical === key.code);
+  }
+  if (!("code" in apply) || !("code" in dismiss)) return false;
+  const prefix = (one: Pick<SuggestionShortcut, "code" | "modifiers">, other: Pick<SuggestionShortcut, "code" | "modifiers">): boolean => {
     const modifier = one.code.startsWith("Alt") ? "option" : one.code.startsWith("Shift") ? "shift" : one.code.startsWith("Control") ? "control" : undefined;
     return modifier !== undefined && other.modifiers.includes(modifier);
   };

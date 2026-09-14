@@ -67,11 +67,18 @@ demand, open the Command Palette and run **Refine: Check current note**.
 
 Suggestion colors, highlighting, automatic checks, local or hosted models, and
 Quick Apply shortcuts are configured in the Refine app. Choose **Custom
-combination…** for Apply or Dismiss to record combinations such as Option+Right
+shortcut…** for Apply or Dismiss to record combinations such as Option+Right
 Arrow. The full physical key and modifier set must match; plain Tab and arrows
 retain their normal behavior when a custom combination is selected. Both the
 app and plugin must support custom shortcuts. Older versions continue using
 the previous single-key bindings identified in Refine settings.
+
+Modifier-only shortcuts support holding two or more exact left/right modifier
+keys, then releasing them, or double-tapping one modifier within half a second.
+Choose **Held modifiers** or **Double-tap modifier** in Refine's recorder.
+Typing another key or changing the active suggestion cancels a pending gesture.
+Both Refine and Obsidian need gesture support; older integrations keep the
+previous bindings shown in Refine settings.
 
 ## Privacy and offline use
 

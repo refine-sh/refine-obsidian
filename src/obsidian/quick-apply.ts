@@ -1,3 +1,4 @@
+import { isModifierGesture, type SuggestionBinding } from "../integration/suggestion-binding";
 import type { SuggestionShortcut } from "../integration/suggestion-shortcut";
 import type { EditorSelection } from "@codemirror/state";
 
@@ -116,13 +117,14 @@ export function isQuickApplyCandidate(
 /** Matches one key press to Refine's configured action and exact modifiers. */
 export function matchesSuggestionActionKey(
   event: KeyboardEvent,
-  actionKey: SuggestionActionKey | SuggestionShortcut,
+  actionKey: SuggestionActionKey | SuggestionShortcut | SuggestionBinding,
 ): boolean {
   if (event.type !== "keydown" || event.repeat || event.isComposing) {
     return false;
   }
 
   if (typeof actionKey !== "string") {
+    if (isModifierGesture(actionKey)) return false;
     const modifiers = actionKey.modifiers;
     const modifierOnly = /^(Shift|Alt|Control)(Left|Right)$/.test(actionKey.code);
     if (modifierOnly) {
@@ -147,7 +149,7 @@ export function matchesSuggestionActionKey(
     hasOnlyModifier(event, expected.modifier);
 }
 
-export function suggestionActionKeyLabel(actionKey: SuggestionActionKey | SuggestionShortcut): string {
+export function suggestionActionKeyLabel(actionKey: SuggestionActionKey | SuggestionShortcut | SuggestionBinding): string {
   return typeof actionKey === "string" ? actionKeyLabels[actionKey] : actionKey.label;
 }
 

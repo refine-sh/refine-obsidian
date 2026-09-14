@@ -1103,15 +1103,24 @@ def validate_suggestion_shortcut(value: Any, store: SchemaStore) -> None:
             raise ConformanceError("shortcut", "typing shortcut requires a modifier")
 
 
+def validate_suggestion_binding(value: Any, store: SchemaStore) -> None:
+    validate_portable_value(value)
+    validate_with_schema(value, "schema/suggestion-shortcuts-v2.schema.json", store)
+    if value["kind"] == "keyCombination":
+        validate_suggestion_shortcut(value, store)
+
+
 def verify_shortcut_vectors(root: Path, store: SchemaStore) -> None:
-    for case in load_json(root / "vectors/shortcuts/bindings.json")["cases"]:
-        try:
-            validate_suggestion_shortcut(case["value"], store)
-            valid = True
-        except ConformanceError:
-            valid = False
-        if valid != case["valid"]:
-            raise ConformanceError("shortcut-vector", case["id"])
+    for path, validator in [("bindings.json", validate_suggestion_shortcut),
+                            ("bindings-v2.json", validate_suggestion_binding)]:
+        for case in load_json(root / "vectors/shortcuts" / path)["cases"]:
+            try:
+                validator(case["value"], store)
+                valid = True
+            except ConformanceError:
+                valid = False
+            if valid != case["valid"]:
+                raise ConformanceError("shortcut-vector", case["id"])
 
 
 def verify(root: Path) -> Mapping[str, Any]:

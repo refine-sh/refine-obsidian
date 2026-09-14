@@ -68,6 +68,7 @@ const SOCKET_SCENARIOS = [
   "base-handshake",
   "golden-writing-session",
   "suggestion-shortcuts",
+  "modifier-gestures",
   "typed-rejections",
   "fatal-fault",
   "reconnect-resumed",

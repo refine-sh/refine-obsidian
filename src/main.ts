@@ -1,3 +1,4 @@
+import { SUGGESTION_GESTURE_CAPABILITY } from "./integration/suggestion-binding";
 import { SUGGESTION_SHORTCUT_CAPABILITY } from "./integration/suggestion-shortcut";
 import {
   addIcon,
@@ -61,7 +62,7 @@ export default class RefinePlugin extends Plugin {
     });
 
     const enginePort = new RefineTransport({
-      capabilities: [SUGGESTION_SHORTCUT_CAPABILITY],
+      capabilities: [SUGGESTION_SHORTCUT_CAPABILITY, SUGGESTION_GESTURE_CAPABILITY],
       client: {
         id: "refine-obsidian",
         version: this.manifest.version,

@@ -9,6 +9,7 @@ const scenarios = [
   "base-handshake",
   "golden-writing-session",
   "suggestion-shortcuts",
+  "modifier-gestures",
   "typed-rejections",
   "fatal-fault",
   "reconnect-resumed",

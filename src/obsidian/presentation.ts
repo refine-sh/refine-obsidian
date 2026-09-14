@@ -1,3 +1,5 @@
+import { ModifierGestureRecognizer } from "../integration/modifier-gesture-recognizer";
+import { isModifierGesture, isPhysicalModifier, type PhysicalModifier } from "../integration/suggestion-binding";
 import { effectiveSuggestionShortcut, suggestionShortcutsConflict } from "../integration/suggestion-shortcut";
 import {
   autoUpdate,
@@ -445,6 +447,11 @@ class PresentationInteractionController implements PluginValue {
   private pendingHover: HoverCandidate | undefined;
   private pointerInsideCard = false;
   private primaryPointerDownInEditor = false;
+  private gestureOwner: string | undefined;
+  private gestureApply: ModifierGestureRecognizer | undefined;
+  private gestureDismiss: ModifierGestureRecognizer | undefined;
+  private gesturePressed = new Set<PhysicalModifier>();
+  private gestureAwaitingNeutral = false;
   private quickApplyTip: HTMLElement | undefined;
   private quickApplyTipCleanup: (() => void) | undefined;
   private quickApplyTipIdentity: string | undefined;
@@ -452,6 +459,12 @@ class PresentationInteractionController implements PluginValue {
   private suppressHoverUntilMove = false;
 
   constructor(private readonly view: EditorView) {
+    view.dom.ownerDocument.addEventListener("keydown", this.handleModifierGesture, true);
+    view.dom.ownerDocument.addEventListener("keyup", this.handleModifierGesture, true);
+    view.dom.ownerDocument.addEventListener("pointerdown", this.resetModifierGestures, true);
+    view.dom.ownerDocument.addEventListener("compositionstart", this.resetModifierGestures, true);
+    view.dom.ownerDocument.addEventListener("focusout", this.resetModifierGestures, true);
+    view.dom.ownerDocument.defaultView?.addEventListener("blur", this.resetModifierGestures);
     view.dom.addEventListener("keydown", this.handleSuggestionActionKeyDown, true);
     view.contentDOM.addEventListener("mousedown", this.handleMouseDown, true);
     view.contentDOM.addEventListener("mousemove", this.handleMouseMove, true);
@@ -484,6 +497,7 @@ class PresentationInteractionController implements PluginValue {
     const clearedLivePresentation = update.transactions.some((transaction) =>
       transaction.effects.some((effect) => effect.is(clearLivePresentationEffect))
     );
+    if (update.docChanged || update.selectionSet || replacedPresentation || clearedLivePresentation) this.resetModifierGestures();
     if (update.docChanged || clearedLivePresentation) {
       // Presentation freshness and pointer lifecycle are independent. Closing
       // the card here is enough; clearing gesture state could let a pending
@@ -505,6 +519,13 @@ class PresentationInteractionController implements PluginValue {
   }
 
   destroy(): void {
+    this.view.dom.ownerDocument.removeEventListener("keydown", this.handleModifierGesture, true);
+    this.view.dom.ownerDocument.removeEventListener("keyup", this.handleModifierGesture, true);
+    this.view.dom.ownerDocument.removeEventListener("pointerdown", this.resetModifierGestures, true);
+    this.view.dom.ownerDocument.removeEventListener("compositionstart", this.resetModifierGestures, true);
+    this.view.dom.ownerDocument.removeEventListener("focusout", this.resetModifierGestures, true);
+    this.view.dom.ownerDocument.defaultView?.removeEventListener("blur", this.resetModifierGestures);
+    this.resetModifierGestures();
     this.view.dom.removeEventListener(
       "keydown",
       this.handleSuggestionActionKeyDown,
@@ -911,6 +932,79 @@ class PresentationInteractionController implements PluginValue {
     card.dataset.refinePlacement = placement;
   }
 
+  private readonly resetModifierGestures = (): void => {
+    this.gestureApply?.cancel();
+    this.gestureDismiss?.cancel();
+    this.gestureOwner = undefined;
+    this.gestureAwaitingNeutral ||= this.gesturePressed.size > 0;
+  };
+
+  private readonly handleModifierGesture = (event: KeyboardEvent): void => {
+    if (event.repeat) return;
+    if (event.isComposing || !isPhysicalModifier(event.code)) {
+      this.resetModifierGestures();
+      return;
+    }
+    if (this.gestureAwaitingNeutral) {
+      if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        this.gestureAwaitingNeutral = false;
+        this.gesturePressed.clear();
+      }
+      return;
+    }
+    const wasHeld = this.gesturePressed.size > 0;
+    if (event.type === "keydown") this.gesturePressed.add(event.code);
+    else this.gesturePressed.delete(event.code);
+    const has = (prefix: string) => [...this.gesturePressed].some((key) => key.startsWith(prefix));
+    if (has("Alt") !== event.altKey || has("Control") !== event.ctrlKey ||
+        has("Shift") !== event.shiftKey || has("Meta") !== event.metaKey) {
+      // A modifier held before focus/attachment must not join a fresh gesture.
+      this.resetModifierGestures();
+      this.gestureAwaitingNeutral = true;
+      return;
+    }
+    const presentation = livePresentation(this.view.state.field(presentationField, false));
+    const card = this.element;
+    const cardOwns = card !== undefined && this.cardOwnsShortcutEvent(card, event);
+    const suggestionId = cardOwns ? card.dataset.refineSuggestionId : presentation?.activeQuickApplySuggestionId;
+    const configuration = presentation?.snapshot.interaction.quickApply;
+    if (!presentation || !configuration || !suggestionId || suggestionShortcutsConflict(configuration) ||
+        (!cardOwns && (event.target !== this.view.contentDOM || !configuration.enabled))) {
+      this.resetModifierGestures();
+      return;
+    }
+    const owner = JSON.stringify([presentation.snapshot.documentRevision, presentation.snapshot.checkGeneration,
+      suggestionId, cardOwns ? this.cardBindingEpoch : "cursor", configuration]);
+    if (owner !== this.gestureOwner) {
+      const apply = effectiveSuggestionShortcut(configuration, "apply");
+      const dismiss = effectiveSuggestionShortcut(configuration, "dismiss");
+      this.gestureApply = typeof apply !== "string" && isModifierGesture(apply) ? new ModifierGestureRecognizer(apply) : undefined;
+      this.gestureDismiss = typeof dismiss !== "string" && isModifierGesture(dismiss) ? new ModifierGestureRecognizer(dismiss) : undefined;
+      this.gestureOwner = owner;
+      if (wasHeld) {
+        this.gestureAwaitingNeutral = this.gesturePressed.size > 0;
+        return;
+      }
+    }
+    const apply = this.gestureApply?.update(this.gesturePressed, event.timeStamp) === true;
+    const dismiss = this.gestureDismiss?.update(this.gesturePressed, event.timeStamp) === true;
+    if (!apply && !dismiss) return;
+    this.resetModifierGestures();
+    if (cardOwns) {
+      const control = apply ? suggestionCardApplyControl(card) : suggestionCardDismissControl(card);
+      if (control && !control.disabled && control.getAttribute("aria-disabled") !== "true") control.click();
+    } else if (dismiss) {
+      this.clearQuickApplyActivation();
+    } else {
+      const suggestion = presentation.snapshot.suggestions.find((candidate) => candidate.id === suggestionId &&
+        candidate.sourceId === "document" && candidate.availableActions.includes("apply"));
+      if (suggestion) {
+        this.clearQuickApplyActivation();
+        void presentation.actions.apply(suggestion.id).catch(() => undefined);
+      }
+    }
+  };
+
   private readonly handleSuggestionActionKeyDown = (
     event: KeyboardEvent,
   ): void => {
@@ -1049,12 +1143,16 @@ class PresentationInteractionController implements PluginValue {
     }
 
     this.closeQuickApplyTip();
-    const label = suggestionActionKeyLabel(effectiveSuggestionShortcut(configuration, "apply"));
+    const binding = effectiveSuggestionShortcut(configuration, "apply");
+    const label = suggestionActionKeyLabel(binding);
+    const instruction = typeof binding !== "string" && isModifierGesture(binding)
+      ? binding.kind === "modifierChord" ? `Hold ${label}, then release to apply` : `${label} to apply`
+      : `Press ${label} to apply`;
     const tip = this.view.dom.ownerDocument.body.createDiv({
       cls: ["refine-quick-apply-tip", "refine-quick-apply-tip--measuring"],
       text: suggestionShortcutsConflict(configuration)
         ? "Apply and dismiss shortcuts conflict. Choose different shortcuts in Refine."
-        : `Press ${label} to apply`,
+        : instruction,
       attr: { "aria-hidden": "true" },
     });
     this.quickApplyTip = tip;

@@ -1,3 +1,4 @@
+import { SUGGESTION_GESTURE_CAPABILITY, isSuggestionBinding } from "../integration/suggestion-binding";
 import { SUGGESTION_SHORTCUT_CAPABILITY, isSuggestionShortcut } from "../integration/suggestion-shortcut";
 import { randomUUID } from "node:crypto";
 
@@ -420,7 +421,7 @@ class Session implements RefineTransportSession {
       if (next.done) {
         return;
       }
-      const envelope = decodeEventEnvelope(next.value, this.activatedCapabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY));
+      const envelope = decodeEventEnvelope(next.value, this.activatedCapabilities.includes(SUGGESTION_GESTURE_CAPABILITY) ? 2 : this.activatedCapabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY));
       if (envelope.epoch !== this.serverEpoch) {
         throw new TransportProtocolError("Received an event from a different server epoch");
       }
@@ -850,6 +851,9 @@ function decodeWelcome(
   if (object.capabilities.some((capability) => !isProtocolIdentifier(capability))) {
     throw new TransportProtocolError("Malformed capability activation identifier");
   }
+  if (object.capabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY) && object.capabilities.includes(SUGGESTION_GESTURE_CAPABILITY)) {
+    throw new TransportProtocolError("Server activated conflicting shortcut versions");
+  }
   const offered = new Set(offeredCapabilities);
   if (object.capabilities.some((capability) => !offered.has(capability))) {
     throw new TransportProtocolError("Server activated an unsupported capability");
@@ -868,7 +872,7 @@ function decodeWelcome(
   };
 }
 
-function decodeEventEnvelope(value: unknown, shortcutsEnabled = false): ServerEventEnvelope {
+function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number = false): ServerEventEnvelope {
   const object = requireRecord(value, "event envelope");
   const epoch = object.epoch;
   requireProtocolIdentifier(epoch, "event.epoch");
@@ -895,7 +899,7 @@ function decodeEventEnvelope(value: unknown, shortcutsEnabled = false): ServerEv
       };
 }
 
-function decodeServerEvent(value: unknown, shortcutsEnabled = false): ServerEventEnvelope["event"] {
+function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = false): ServerEventEnvelope["event"] {
   const event = requireRecord(value, "server event");
   switch (event.type) {
     case "documentAccepted":
@@ -952,7 +956,7 @@ function decodeServerEvent(value: unknown, shortcutsEnabled = false): ServerEven
   }
 }
 
-function decodePresentationContent(value: unknown, shortcutsEnabled = false): PresentationContent {
+function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | number = false): PresentationContent {
   const content = requireRecord(value, "presentation content");
   requireProtocolIdentifier(content.documentRevision, "presentation.documentRevision");
   if (!isPresentationStatus(content.status) || !Array.isArray(content.suggestions)) {
@@ -1123,7 +1127,7 @@ function decodePresentationAppearance(
   };
 }
 
-function decodePresentationInteraction(value: unknown, shortcutsEnabled = false): PresentationInteraction {
+function decodePresentationInteraction(value: unknown, shortcutsEnabled: boolean | number = false): PresentationInteraction {
   const interaction = requireRecord(value, "presentation.interaction");
   const quickApply = requireRecord(
     interaction.quickApply,
@@ -1138,13 +1142,14 @@ function decodePresentationInteraction(value: unknown, shortcutsEnabled = false)
   ) {
     throw new TransportProtocolError("Malformed presentation interaction");
   }
-  if (shortcutsEnabled && (!isSuggestionShortcut(quickApply.applyShortcut) || !isSuggestionShortcut(quickApply.dismissShortcut))) {
+  const validateShortcut = shortcutsEnabled === 2 ? isSuggestionBinding : isSuggestionShortcut;
+  if (shortcutsEnabled && (!validateShortcut(quickApply.applyShortcut) || !validateShortcut(quickApply.dismissShortcut))) {
     throw new TransportProtocolError("Malformed negotiated suggestion shortcut");
   }
   return {
     automaticChecksEnabled: interaction.automaticChecksEnabled,
     quickApply: {
-      ...(shortcutsEnabled && isSuggestionShortcut(quickApply.applyShortcut) && isSuggestionShortcut(quickApply.dismissShortcut)
+      ...(shortcutsEnabled && validateShortcut(quickApply.applyShortcut) && validateShortcut(quickApply.dismissShortcut)
         ? { applyShortcut: quickApply.applyShortcut, dismissShortcut: quickApply.dismissShortcut } : {}),
       enabled: quickApply.enabled,
       applyKey: quickApply.applyKey,

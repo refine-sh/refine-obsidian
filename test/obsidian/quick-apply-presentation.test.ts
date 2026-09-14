@@ -141,6 +141,90 @@ describe("Obsidian suggestion Apply shortcuts", () => {
     expect(apply).toHaveBeenCalledWith("suggestion");
   });
 
+  it("applies a both-Options gesture on release without swallowing modifier events", () => {
+    const { host, view } = createHost("A sentence.");
+    view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(snapshot({
+      interaction: interaction({ applyShortcut: {
+        kind: "modifierChord", keys: ["AltLeft", "AltRight"], label: "Both Options",
+      } }),
+      suggestions: [suggestion({ activationRange: { location: 0, length: 11 } })],
+    }), actions({ apply }));
+    const dispatch = (type: string, code: string, altKey: boolean) => {
+      const event = new KeyboardEvent(type, { key: "Alt", code, altKey, bubbles: true, cancelable: true });
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    };
+    dispatch("keydown", "AltLeft", true);
+    dispatch("keydown", "AltRight", true);
+    dispatch("keyup", "AltRight", true);
+    expect(apply).not.toHaveBeenCalled();
+    dispatch("keyup", "AltLeft", false);
+    expect(apply).toHaveBeenCalledWith("suggestion");
+  });
+
+  it.each(["typing", "pointer", "replacement"])("cancels modifier gestures on %s", (cause) => {
+    const { host, view } = createHost("A sentence.");
+    view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    const base = snapshot({
+      interaction: interaction({ applyShortcut: {
+        kind: "modifierChord", keys: ["AltLeft", "AltRight"], label: "Both Options",
+      } }),
+      suggestions: [suggestion({ activationRange: { location: 0, length: 11 } })],
+    });
+    host.present(base, actions({ apply }));
+    view.contentDOM.dispatchEvent(keydown("Alt", "AltLeft", { altKey: true }));
+    view.contentDOM.dispatchEvent(keydown("Alt", "AltRight", { altKey: true }));
+    if (cause === "typing") view.contentDOM.dispatchEvent(keydown("k", "KeyK", { altKey: true }));
+    if (cause === "pointer") view.contentDOM.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    if (cause === "replacement") host.present({ ...base, presentationRevision: 2 }, actions({ apply }));
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", altKey: true, bubbles: true }));
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltRight", bubbles: true }));
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("does not count taps while an unobserved Option is still held", () => {
+    const { host, view } = createHost("A sentence.");
+    view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(snapshot({
+      interaction: interaction({ applyShortcut: {
+        kind: "modifierDoubleTap", key: "AltRight", label: "Double-tap Right Option",
+      } }),
+      suggestions: [suggestion({ activationRange: { location: 0, length: 11 } })],
+    }), actions({ apply }));
+    for (let tap = 0; tap < 2; tap += 1) {
+      view.contentDOM.dispatchEvent(keydown("Alt", "AltRight", { altKey: true }));
+      // Left Option was held before this view observed input.
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltRight", altKey: true, bubbles: true }));
+    }
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltLeft", bubbles: true }));
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("double-taps Right Option to dismiss an owned card", () => {
+    const { host, view } = createHost("A sentence.");
+    const dismiss = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(snapshot({
+      interaction: interaction({ enabled: false, dismissShortcut: {
+        kind: "modifierDoubleTap", key: "AltRight", label: "Double-tap Right Option",
+      } }),
+      suggestions: [suggestion({ availableActions: ["apply", "dismiss"] })],
+    }), actions({ dismiss }));
+    document.querySelector<HTMLElement>(".refine-suggestion")?.dispatchEvent(keydown("Enter", "Enter"));
+    const button = document.querySelector<HTMLButtonElement>('[data-refine-action="dismiss"]');
+    expect(button).not.toBeNull();
+    for (let tap = 0; tap < 2; tap += 1) {
+      button?.dispatchEvent(keydown("Alt", "AltRight", { altKey: true }));
+      button?.dispatchEvent(new KeyboardEvent("keyup", { key: "Alt", code: "AltRight", bubbles: true }));
+      if (tap === 0) expect(dismiss).not.toHaveBeenCalled();
+    }
+    expect(dismiss).toHaveBeenCalledWith("suggestion");
+    expect(view.state.doc.toString()).toBe("A sentence.");
+  });
+
   it("uses the synchronized dismiss key only to cancel cursor activation", () => {
     const { host, view } = createHost("A sentence.");
     view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });

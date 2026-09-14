@@ -1,3 +1,4 @@
+import type { SuggestionBinding } from "./suggestion-binding";
 import type { SuggestionShortcut } from "./suggestion-shortcut";
 export type DocumentRevision = string;
 export type SourceID = string;
@@ -119,8 +120,8 @@ export interface PresentationInteraction {
   readonly automaticChecksEnabled: boolean;
   readonly quickApply: {
     readonly enabled: boolean;
-    readonly applyShortcut?: SuggestionShortcut;
-    readonly dismissShortcut?: SuggestionShortcut;
+    readonly applyShortcut?: SuggestionShortcut | SuggestionBinding;
+    readonly dismissShortcut?: SuggestionShortcut | SuggestionBinding;
     readonly applyKey: SuggestionActionKey;
     readonly dismissKey: SuggestionActionKey;
     readonly activationStyle: QuickApplyActivationStyle;
