@@ -66,7 +66,12 @@ progress, and suggestion count. Select it to open the Refine menu. To check on
 demand, open the Command Palette and run **Refine: Check current note**.
 
 Suggestion colors, highlighting, automatic checks, local or hosted models, and
-Quick Apply shortcuts are configured in the Refine app.
+Quick Apply shortcuts are configured in the Refine app. Choose **Custom
+combination…** for Apply or Dismiss to record combinations such as Option+Right
+Arrow. The full physical key and modifier set must match; plain Tab and arrows
+retain their normal behavior when a custom combination is selected. Both the
+app and plugin must support custom shortcuts. Older versions continue using
+the previous single-key bindings identified in Refine settings.
 
 ## Privacy and offline use
 

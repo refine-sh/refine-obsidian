@@ -1,3 +1,4 @@
+import type { SuggestionShortcut } from "../integration/suggestion-shortcut";
 import type { EditorSelection } from "@codemirror/state";
 
 import type {
@@ -112,15 +113,26 @@ export function isQuickApplyCandidate(
     rangeContainsCursor(suggestion.activationRange, selection.main.head);
 }
 
-/** Matches one unmodified key press to Refine's configured action key. */
+/** Matches one key press to Refine's configured action and exact modifiers. */
 export function matchesSuggestionActionKey(
   event: KeyboardEvent,
-  actionKey: SuggestionActionKey,
+  actionKey: SuggestionActionKey | SuggestionShortcut,
 ): boolean {
   if (event.type !== "keydown" || event.repeat || event.isComposing) {
     return false;
   }
 
+  if (typeof actionKey !== "string") {
+    const modifiers = actionKey.modifiers;
+    const modifierOnly = /^(Shift|Alt|Control)(Left|Right)$/.test(actionKey.code);
+    if (modifierOnly) {
+      const modifier = actionKey.code.startsWith("Shift") ? "shift" : actionKey.code.startsWith("Alt") ? "alt" : "control";
+      return event.code === actionKey.code && hasOnlyModifier(event, modifier);
+    }
+    return event.code === actionKey.code && event.altKey === modifiers.includes("option") &&
+      event.ctrlKey === modifiers.includes("control") && event.metaKey === modifiers.includes("command") &&
+      event.shiftKey === modifiers.includes("shift");
+  }
   if (actionKey in ordinaryEventKeys) {
     const key = actionKey as keyof typeof ordinaryEventKeys;
     const expected = ordinaryEventKeys[key];
@@ -135,8 +147,8 @@ export function matchesSuggestionActionKey(
     hasOnlyModifier(event, expected.modifier);
 }
 
-export function suggestionActionKeyLabel(actionKey: SuggestionActionKey): string {
-  return actionKeyLabels[actionKey];
+export function suggestionActionKeyLabel(actionKey: SuggestionActionKey | SuggestionShortcut): string {
+  return typeof actionKey === "string" ? actionKeyLabels[actionKey] : actionKey.label;
 }
 
 function rangeContainsCursor(range: UTF16Range, cursor: number): boolean {

@@ -1,3 +1,4 @@
+import { effectiveSuggestionShortcut, suggestionShortcutsConflict } from "../integration/suggestion-shortcut";
 import {
   autoUpdate,
   computePosition,
@@ -602,6 +603,7 @@ class PresentationInteractionController implements PluginValue {
       "refine-tooltip--measuring",
       `refine-tooltip--${mode}`,
     );
+    this.syncCardShortcuts(card, presentation.snapshot.interaction.quickApply);
     card.dataset.refineSuggestionId = suggestionId;
     card.addEventListener("keydown", this.handleSuggestionActionKeyDown, true);
     this.element = card;
@@ -733,6 +735,7 @@ class PresentationInteractionController implements PluginValue {
         lifecycle: this.cardLifecycle(() => card, mode, bindingEpoch),
       },
     );
+    this.syncCardShortcuts(card, current.snapshot.interaction.quickApply);
     this.cardMatch = replacementMatch;
     this.manualTrigger = replacementManualTrigger;
     this.updateCardReference(
@@ -747,6 +750,24 @@ class PresentationInteractionController implements PluginValue {
             `[data-refine-action="${focusedAction}"]`,
           ) ?? card;
       focusTarget.focus({ preventScroll: true });
+    }
+  }
+
+  private syncCardShortcuts(
+    card: HTMLElement,
+    configuration: PresentationSnapshot["interaction"]["quickApply"],
+  ): void {
+    for (const action of ["apply", "dismiss"] as const) {
+      const control = action === "apply" ? suggestionCardApplyControl(card) : suggestionCardDismissControl(card);
+      const label = suggestionActionKeyLabel(effectiveSuggestionShortcut(configuration, action));
+      if (control) control.title = `${action === "apply" ? "Apply" : "Dismiss"} (${label})`;
+    }
+    card.querySelector(".refine-shortcut-conflict")?.remove();
+    if (suggestionShortcutsConflict(configuration)) {
+      card.append(createElIn(card.ownerDocument, "p", {
+        cls: "refine-shortcut-conflict",
+        text: "Apply and dismiss shortcuts conflict. Choose different shortcuts in Refine.",
+      }));
     }
   }
 
@@ -910,16 +931,16 @@ class PresentationInteractionController implements PluginValue {
     }
     const suggestionId = presentation?.activeQuickApplySuggestionId;
     const configuration = presentation?.snapshot.interaction.quickApply;
-    if (!presentation || !suggestionId || !configuration?.enabled) {
+    if (!presentation || !suggestionId || !configuration?.enabled || suggestionShortcutsConflict(configuration)) {
       return;
     }
 
-    if (matchesSuggestionActionKey(event, configuration.dismissKey)) {
+    if (matchesSuggestionActionKey(event, effectiveSuggestionShortcut(configuration, "dismiss"))) {
       this.consumeSuggestionActionKey(event);
       this.clearQuickApplyActivation();
       return;
     }
-    if (!matchesSuggestionActionKey(event, configuration.applyKey)) {
+    if (!matchesSuggestionActionKey(event, effectiveSuggestionShortcut(configuration, "apply"))) {
       return;
     }
     const suggestion = presentation.snapshot.suggestions.find((candidate) =>
@@ -956,9 +977,10 @@ class PresentationInteractionController implements PluginValue {
       return;
     }
     const configuration = presentation.snapshot.interaction.quickApply;
-    const control = matchesSuggestionActionKey(event, configuration.applyKey)
+    if (suggestionShortcutsConflict(configuration)) return;
+    const control = matchesSuggestionActionKey(event, effectiveSuggestionShortcut(configuration, "apply"))
       ? suggestionCardApplyControl(card)
-      : matchesSuggestionActionKey(event, configuration.dismissKey)
+      : matchesSuggestionActionKey(event, effectiveSuggestionShortcut(configuration, "dismiss"))
         ? suggestionCardDismissControl(card)
         : undefined;
     if (!control) {
@@ -1019,7 +1041,7 @@ class PresentationInteractionController implements PluginValue {
     const identity = [
       presentation.snapshot.presentationRevision,
       suggestionId,
-      configuration.applyKey,
+      JSON.stringify(effectiveSuggestionShortcut(configuration, "apply")),
       cursor,
     ].join(":");
     if (this.quickApplyTipIdentity === identity && this.quickApplyTip) {
@@ -1027,10 +1049,12 @@ class PresentationInteractionController implements PluginValue {
     }
 
     this.closeQuickApplyTip();
-    const label = suggestionActionKeyLabel(configuration.applyKey);
+    const label = suggestionActionKeyLabel(effectiveSuggestionShortcut(configuration, "apply"));
     const tip = this.view.dom.ownerDocument.body.createDiv({
       cls: ["refine-quick-apply-tip", "refine-quick-apply-tip--measuring"],
-      text: `Press ${label} to apply`,
+      text: suggestionShortcutsConflict(configuration)
+        ? "Apply and dismiss shortcuts conflict. Choose different shortcuts in Refine."
+        : `Press ${label} to apply`,
       attr: { "aria-hidden": "true" },
     });
     this.quickApplyTip = tip;

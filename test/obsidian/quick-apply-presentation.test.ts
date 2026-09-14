@@ -115,6 +115,32 @@ describe("Obsidian suggestion Apply shortcuts", () => {
     expect(apply).toHaveBeenCalledWith("suggestion");
   });
 
+  it("uses a custom combination while leaving Tab and plain arrows to the editor", () => {
+    const { host, view } = createHost("A sentence.");
+    view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });
+    const apply = vi.fn(async () => ({ status: "completed" as const }));
+    host.present(
+      snapshot({
+        interaction: interaction({
+          applyShortcut: { code: "ArrowRight", key: "ArrowRight", modifiers: ["option"], label: "⌥→" },
+        }),
+        suggestions: [suggestion({ activationRange: { location: 0, length: 11 } })],
+      }),
+      actions({ apply }),
+    );
+
+    expect(document.querySelector(".refine-quick-apply-tip")?.textContent).toBe("Press ⌥→ to apply");
+    for (const event of [keydown("Tab", "Tab"), keydown("ArrowRight", "ArrowRight")]) {
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(apply).not.toHaveBeenCalled();
+    }
+    const custom = keydown("ArrowRight", "ArrowRight", { altKey: true });
+    view.contentDOM.dispatchEvent(custom);
+    expect(custom.defaultPrevented).toBe(true);
+    expect(apply).toHaveBeenCalledWith("suggestion");
+  });
+
   it("uses the synchronized dismiss key only to cancel cursor activation", () => {
     const { host, view } = createHost("A sentence.");
     view.dispatch({ selection: { anchor: 4 }, userEvent: "select" });
@@ -467,16 +493,20 @@ describe("Obsidian suggestion Apply shortcuts", () => {
       {
         ...first,
         presentationRevision: 2,
-        interaction: interaction({ enabled: false, applyKey: "rightShift" }),
+        interaction: interaction({
+          enabled: false,
+          applyShortcut: { code: "ArrowRight", key: "ArrowRight", modifiers: ["option"], label: "⌥→" },
+        }),
       },
       actions({ apply: newApply }),
     );
     const applyButton = document.querySelector<HTMLButtonElement>(
       '[data-refine-action="apply"]',
     );
+    expect(applyButton?.title).toBe("Apply (⌥→)");
     const oldKey = keydown("Tab", "Tab");
     applyButton?.dispatchEvent(oldKey);
-    const newKey = keydown("Shift", "ShiftRight", { shiftKey: true });
+    const newKey = keydown("ArrowRight", "ArrowRight", { altKey: true });
     applyButton?.dispatchEvent(newKey);
 
     expect(oldKey.defaultPrevented).toBe(false);

@@ -67,6 +67,7 @@ const execFileAsync = promisify(execFile);
 const SOCKET_SCENARIOS = [
   "base-handshake",
   "golden-writing-session",
+  "suggestion-shortcuts",
   "typed-rejections",
   "fatal-fault",
   "reconnect-resumed",

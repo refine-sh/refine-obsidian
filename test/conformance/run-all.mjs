@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 const scenarios = [
   "base-handshake",
   "golden-writing-session",
+  "suggestion-shortcuts",
   "typed-rejections",
   "fatal-fault",
   "reconnect-resumed",

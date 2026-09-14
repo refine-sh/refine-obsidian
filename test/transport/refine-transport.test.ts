@@ -27,6 +27,43 @@ import {
 const VALID_LAUNCH_TOKEN = "A".repeat(64);
 
 describe("Refine transport handshake", () => {
+  it.each([true, false])("decodes custom bindings only after negotiation (%s)", async (enabled) => {
+    const capability = "com.runjuu.refine.suggestion-shortcuts.v1";
+    const frames = new AsyncQueue<unknown>();
+    const sent: unknown[] = [];
+    const connector = connectionConnector(frames, sent, () => frames.push({
+      type: "welcome", protocol: { major: 1, minor: 0 }, serverEpoch: "epoch-1", runResumed: false,
+      limits: { maxFrameBytes: 8_388_608, maxSources: 2, maxSourceBytes: 1_048_576 },
+      capabilities: enabled ? [capability] : [],
+    }));
+    const transport = new RefineTransport({
+      client: { id: "test", version: "1", host: "test" }, capabilities: [capability],
+      connector, endpointLocator: endpointLocator(),
+    });
+    const session = await transport.connect(new AbortController().signal, { runId: "run-shortcuts" });
+    const shortcut = { code: "ArrowRight", key: "ArrowRight", modifiers: ["option"], label: "⌥→" };
+    frames.push({ type: "event", sequence: 1, epoch: "epoch-1", event: {
+      type: "presentationContentReplaced", checkId: "check-1", content: {
+        documentRevision: "doc:0", presentationRevision: 1, checkGeneration: 1, status: "pending", suggestions: [],
+        appearance: {
+          highlight: { style: "underline", grammarColor: "#FF2D55", fluencyColor: "#007AFF" },
+          diff: { additionColor: "#34C759", deletionColor: "#FF3B30", showHiddenWhitespace: true },
+        },
+        interaction: { automaticChecksEnabled: true, quickApply: {
+          ...DEFAULT_PRESENTATION_INTERACTION.quickApply, applyShortcut: shortcut,
+          dismissShortcut: { code: "Escape", key: "Escape", modifiers: [], label: "Esc" },
+        } },
+      },
+    } });
+    const result = await session.events(new AbortController().signal)[Symbol.asyncIterator]().next();
+    expect(result.value?.event.type).toBe("presentationContentReplaced");
+    if (result.value?.event.type === "presentationContentReplaced") {
+      expect(result.value.event.content.interaction.quickApply.applyShortcut).toEqual(enabled ? shortcut : undefined);
+      expect(result.value.event.content.interaction.quickApply.applyKey).toBe("tab");
+    }
+    await session.close();
+  });
+
   it.each([
     ["id", "test client"],
     ["version", "v1\n"],

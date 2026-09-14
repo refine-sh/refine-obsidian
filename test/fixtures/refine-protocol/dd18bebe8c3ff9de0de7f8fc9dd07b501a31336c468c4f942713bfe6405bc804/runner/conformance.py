@@ -628,8 +628,10 @@ def published_capability_ids(root: Path, store: SchemaStore) -> List[str]:
     validate_portable_value(registry)
     validate_with_schema(registry, "schema/capability-registry.schema.json", store)
     capabilities = registry["capabilities"]
-    if capabilities:
-        raise ConformanceError("registry", "the Protocol 1.0 base registry must be empty")
+    for entry in capabilities:
+        specification = root / entry["specification"]
+        if not specification.is_file() or sha256(specification) != entry["digest"]:
+            raise ConformanceError("registry", "capability specification digest mismatch")
     return [entry["id"] for entry in capabilities]
 
 
@@ -1085,12 +1087,40 @@ def verify_manifest(root: Path) -> Mapping[str, Any]:
     return manifest
 
 
+def validate_suggestion_shortcut(value: Any, store: SchemaStore) -> None:
+    validate_portable_value(value)
+    validate_with_schema(value, "schema/suggestion-shortcuts.schema.json", store)
+    code, modifiers = value["code"], value["modifiers"]
+    if code.startswith(("Shift", "Alt", "Control")):
+        if modifiers:
+            raise ConformanceError("shortcut", "standalone modifier has additional modifiers")
+    else:
+        printable = code.startswith(("Key", "Digit", "Intl", "Numpad")) or code in {
+            "Equal", "Minus", "BracketRight", "BracketLeft", "Quote", "Semicolon",
+            "Backslash", "Comma", "Slash", "Period", "Backquote",
+        }
+        if printable and not set(modifiers) & {"control", "option", "command"}:
+            raise ConformanceError("shortcut", "typing shortcut requires a modifier")
+
+
+def verify_shortcut_vectors(root: Path, store: SchemaStore) -> None:
+    for case in load_json(root / "vectors/shortcuts/bindings.json")["cases"]:
+        try:
+            validate_suggestion_shortcut(case["value"], store)
+            valid = True
+        except ConformanceError:
+            valid = False
+        if valid != case["valid"]:
+            raise ConformanceError("shortcut-vector", case["id"])
+
+
 def verify(root: Path) -> Mapping[str, Any]:
     manifest = verify_manifest(root)
     store = SchemaStore(root)
     for path in sorted((root / "schema").glob("*.json")):
         store.load(str(path.relative_to(root)))
     published = published_capability_ids(root, store)
+    verify_shortcut_vectors(root, store)
     positive, negative = verify_json_vectors(root, store, published)
     frames = verify_frame_vectors(root, store, published)
     states = verify_state_vectors(root, store, published)

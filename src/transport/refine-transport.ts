@@ -1,3 +1,4 @@
+import { SUGGESTION_SHORTCUT_CAPABILITY, isSuggestionShortcut } from "../integration/suggestion-shortcut";
 import { randomUUID } from "node:crypto";
 
 import type { PresentationInteraction } from "../integration/types";
@@ -419,7 +420,7 @@ class Session implements RefineTransportSession {
       if (next.done) {
         return;
       }
-      const envelope = decodeEventEnvelope(next.value);
+      const envelope = decodeEventEnvelope(next.value, this.activatedCapabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY));
       if (envelope.epoch !== this.serverEpoch) {
         throw new TransportProtocolError("Received an event from a different server epoch");
       }
@@ -867,7 +868,7 @@ function decodeWelcome(
   };
 }
 
-function decodeEventEnvelope(value: unknown): ServerEventEnvelope {
+function decodeEventEnvelope(value: unknown, shortcutsEnabled = false): ServerEventEnvelope {
   const object = requireRecord(value, "event envelope");
   const epoch = object.epoch;
   requireProtocolIdentifier(epoch, "event.epoch");
@@ -882,7 +883,7 @@ function decodeEventEnvelope(value: unknown): ServerEventEnvelope {
   ) {
     throw new TransportProtocolError("Malformed server event envelope");
   }
-  const event = decodeServerEvent(object.event);
+  const event = decodeServerEvent(object.event, shortcutsEnabled);
   return object.causeCommandId === undefined
     ? { type: "event", sequence: object.sequence, epoch, event }
     : {
@@ -894,7 +895,7 @@ function decodeEventEnvelope(value: unknown): ServerEventEnvelope {
       };
 }
 
-function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
+function decodeServerEvent(value: unknown, shortcutsEnabled = false): ServerEventEnvelope["event"] {
   const event = requireRecord(value, "server event");
   switch (event.type) {
     case "documentAccepted":
@@ -910,7 +911,7 @@ function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
       return {
         type: "presentationContentReplaced",
         checkId: event.checkId,
-        content: decodePresentationContent(event.content),
+        content: decodePresentationContent(event.content, shortcutsEnabled),
       };
     case "applyRequested":
       requireProtocolIdentifier(event.actionId, "applyRequested.actionId");
@@ -951,7 +952,7 @@ function decodeServerEvent(value: unknown): ServerEventEnvelope["event"] {
   }
 }
 
-function decodePresentationContent(value: unknown): PresentationContent {
+function decodePresentationContent(value: unknown, shortcutsEnabled = false): PresentationContent {
   const content = requireRecord(value, "presentation content");
   requireProtocolIdentifier(content.documentRevision, "presentation.documentRevision");
   if (!isPresentationStatus(content.status) || !Array.isArray(content.suggestions)) {
@@ -1018,7 +1019,7 @@ function decodePresentationContent(value: unknown): PresentationContent {
   }
   const suggestions = content.suggestions.map(decodePresentedSuggestion);
   const appearance = decodePresentationAppearance(content.appearance);
-  const interaction = decodePresentationInteraction(content.interaction);
+  const interaction = decodePresentationInteraction(content.interaction, shortcutsEnabled);
   const progress = !hasProgress
     ? undefined
     : decodeCheckingProgress(content.progress);
@@ -1122,7 +1123,7 @@ function decodePresentationAppearance(
   };
 }
 
-function decodePresentationInteraction(value: unknown): PresentationInteraction {
+function decodePresentationInteraction(value: unknown, shortcutsEnabled = false): PresentationInteraction {
   const interaction = requireRecord(value, "presentation.interaction");
   const quickApply = requireRecord(
     interaction.quickApply,
@@ -1137,9 +1138,14 @@ function decodePresentationInteraction(value: unknown): PresentationInteraction 
   ) {
     throw new TransportProtocolError("Malformed presentation interaction");
   }
+  if (shortcutsEnabled && (!isSuggestionShortcut(quickApply.applyShortcut) || !isSuggestionShortcut(quickApply.dismissShortcut))) {
+    throw new TransportProtocolError("Malformed negotiated suggestion shortcut");
+  }
   return {
     automaticChecksEnabled: interaction.automaticChecksEnabled,
     quickApply: {
+      ...(shortcutsEnabled && isSuggestionShortcut(quickApply.applyShortcut) && isSuggestionShortcut(quickApply.dismissShortcut)
+        ? { applyShortcut: quickApply.applyShortcut, dismissShortcut: quickApply.dismissShortcut } : {}),
       enabled: quickApply.enabled,
       applyKey: quickApply.applyKey,
       dismissKey: quickApply.dismissKey,
