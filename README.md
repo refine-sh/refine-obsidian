@@ -218,6 +218,20 @@ REFINE_PROTOCOL_ROOT=/path/to/refine-protocol npm run test:conformance
 This external-repository gate is intentionally separate from `npm test`; the
 normal test suite does not require a protocol checkout.
 
+Partial-check passage details use the optional
+`com.runjuu.refine.check-diagnostics.v1` capability. The draft extension vectors
+are in `test/fixtures/check-diagnostics-v1.json`; the immutable base-protocol
+fixtures remain unchanged. Before releasing this extension, publish its
+specification and registry entry in `refine-protocol`, pin that published
+revision, and rerun the client and protocol conformance suites. Until then,
+only DEBUG builds of the Refine app activate the draft capability. Production
+and older Refine servers continue to show the partial status and offer
+**Retry current note**.
+
+The plugin retains bounded coordinate metadata for historical revisions, without
+note text; diagnostics for an unknown or evicted revision end the integration
+because their source coordinates can no longer be validated.
+
 For local testing, copy `manifest.json`, `main.js`, and `styles.css` into
 `.obsidian/plugins/refine/` in a test vault, then reload Obsidian and enable
 **Refine** under Community plugins.

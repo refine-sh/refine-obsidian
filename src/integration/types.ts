@@ -163,6 +163,7 @@ export interface CheckingProgress {
 }
 
 export interface PresentationSnapshot {
+  readonly checkDiagnostics?: import("./check-diagnostics").CheckDiagnostics;
   readonly documentRevision: DocumentRevision;
   readonly presentationRevision: number;
   readonly checkGeneration: number;

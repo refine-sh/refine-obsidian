@@ -17,7 +17,7 @@ export type RefineStatusBarState = (
       readonly progress?: CheckingProgress;
     }
   | { readonly type: "suggestions"; readonly count: number }
-  | { readonly type: "partial"; readonly count: number }
+  | { readonly type: "partial"; readonly count: number; readonly uncheckedPassageCount?: number }
   | { readonly type: "checkFailed" }
   | {
       readonly type: "incompatible";
@@ -52,8 +52,16 @@ export function statusMenuShowsManualCheck(
   return statusMenuShowsCheckControls(state) &&
     (
       state.type === "refreshing" ||
+      state.type === "partial" ||
+      state.type === "checkFailed" ||
       state.automaticChecksEnabled === false
     );
+}
+
+export function statusMenuCheckLabel(state: RefineStatusBarState): string {
+  return state.type === "partial" || state.type === "checkFailed"
+    ? "Retry current note"
+    : "Check current note";
 }
 
 export function statusMenuShowsAutomaticCheckNotice(
@@ -180,7 +188,7 @@ export function createRefineStatusBarController(
           element,
           renderIcon,
           "partial",
-          `Refine: ${suggestionText}. Open Refine menu`,
+          `Refine: ${suggestionText}${state.uncheckedPassageCount === undefined ? "" : `, ${state.uncheckedPassageCount} incomplete ${state.uncheckedPassageCount === 1 ? "check" : "checks"}`}. Open Refine menu`,
           REFINE_MENU_BAR_ICON_ID,
         );
         appendSuggestionCount(element, state.count);
@@ -262,6 +270,9 @@ export function statusBarStateForSession(
             type: "partial",
             count: snapshot.suggestions.length,
             automaticChecksEnabled,
+            ...(snapshot.checkDiagnostics === undefined ? {} : {
+              uncheckedPassageCount: snapshot.checkDiagnostics.issues.length + snapshot.checkDiagnostics.omittedIssueCount,
+            }),
           }
         : {
             type: "suggestions",

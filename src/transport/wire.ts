@@ -303,6 +303,7 @@ export interface ClientCommandEnvelope {
 }
 
 export interface PresentationContent {
+  readonly checkDiagnostics?: import("../integration/check-diagnostics").CheckDiagnostics;
   readonly documentRevision: DocumentRevision;
   readonly appearance: PresentationAppearance;
   readonly interaction: PresentationInteraction;

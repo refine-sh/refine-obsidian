@@ -1,6 +1,7 @@
 import { SUGGESTION_GESTURE_CAPABILITY, isSuggestionBinding } from "../integration/suggestion-binding";
 import { SUGGESTION_SHORTCUT_CAPABILITY, isSuggestionShortcut } from "../integration/suggestion-shortcut";
 import { randomUUID } from "node:crypto";
+import { CHECK_DIAGNOSTICS_CAPABILITY, CHECK_DIAGNOSTIC_REASONS, MAX_CHECK_DIAGNOSTIC_ISSUES, compareCheckDiagnosticIssuesWithinSource, type CheckDiagnosticIssue, type CheckDiagnostics } from "../integration/check-diagnostics";
 
 import type { PresentationInteraction } from "../integration/types";
 import { abortReason } from "../shared/errors";
@@ -421,7 +422,9 @@ class Session implements RefineTransportSession {
       if (next.done) {
         return;
       }
-      const envelope = decodeEventEnvelope(next.value, this.activatedCapabilities.includes(SUGGESTION_GESTURE_CAPABILITY) ? 2 : this.activatedCapabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY));
+      const envelope = decodeEventEnvelope(next.value,
+        this.activatedCapabilities.includes(SUGGESTION_GESTURE_CAPABILITY) ? 2 : this.activatedCapabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY),
+        this.activatedCapabilities.includes(CHECK_DIAGNOSTICS_CAPABILITY));
       if (envelope.epoch !== this.serverEpoch) {
         throw new TransportProtocolError("Received an event from a different server epoch");
       }
@@ -872,7 +875,7 @@ function decodeWelcome(
   };
 }
 
-function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number = false): ServerEventEnvelope {
+function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false): ServerEventEnvelope {
   const object = requireRecord(value, "event envelope");
   const epoch = object.epoch;
   requireProtocolIdentifier(epoch, "event.epoch");
@@ -887,7 +890,7 @@ function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number 
   ) {
     throw new TransportProtocolError("Malformed server event envelope");
   }
-  const event = decodeServerEvent(object.event, shortcutsEnabled);
+  const event = decodeServerEvent(object.event, shortcutsEnabled, checkDiagnosticsEnabled);
   return object.causeCommandId === undefined
     ? { type: "event", sequence: object.sequence, epoch, event }
     : {
@@ -899,7 +902,7 @@ function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number 
       };
 }
 
-function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = false): ServerEventEnvelope["event"] {
+function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false): ServerEventEnvelope["event"] {
   const event = requireRecord(value, "server event");
   switch (event.type) {
     case "documentAccepted":
@@ -915,7 +918,7 @@ function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = 
       return {
         type: "presentationContentReplaced",
         checkId: event.checkId,
-        content: decodePresentationContent(event.content, shortcutsEnabled),
+        content: decodePresentationContent(event.content, shortcutsEnabled, checkDiagnosticsEnabled),
       };
     case "applyRequested":
       requireProtocolIdentifier(event.actionId, "applyRequested.actionId");
@@ -956,7 +959,7 @@ function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = 
   }
 }
 
-function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | number = false): PresentationContent {
+function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false): PresentationContent {
   const content = requireRecord(value, "presentation content");
   requireProtocolIdentifier(content.documentRevision, "presentation.documentRevision");
   if (!isPresentationStatus(content.status) || !Array.isArray(content.suggestions)) {
@@ -968,6 +971,12 @@ function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | n
   const coverage = isPresentationCoverage(content.coverage)
     ? content.coverage
     : undefined;
+  const checkDiagnostics = checkDiagnosticsEnabled && Object.hasOwn(content, "checkDiagnostics")
+    ? decodeCheckDiagnostics(content.checkDiagnostics)
+    : undefined;
+  if (checkDiagnostics !== undefined && (content.status !== "complete" || coverage !== "partial")) {
+    throw new TransportProtocolError("Check diagnostics require a partial completed presentation");
+  }
   const unavailableReason = isPresentationUnavailableReason(
     content.unavailableReason,
   )
@@ -1035,6 +1044,7 @@ function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | n
       documentRevision: content.documentRevision,
       status: "complete",
       coverage,
+      ...(checkDiagnostics === undefined ? {} : { checkDiagnostics }),
       appearance,
       interaction,
       suggestions,
@@ -1070,6 +1080,42 @@ function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | n
     interaction,
     suggestions,
   };
+}
+
+function decodeCheckDiagnostics(value: unknown): CheckDiagnostics {
+  const diagnostics = requireRecord(value, "check diagnostics");
+  if (!Array.isArray(diagnostics.issues) || diagnostics.issues.length > MAX_CHECK_DIAGNOSTIC_ISSUES ||
+      !isIntegerMember(diagnostics, "omittedIssueCount", 0, Number.MAX_SAFE_INTEGER) ||
+      typeof diagnostics.omittedIssueCount !== "number" ||
+      (diagnostics.issues.length === 0 && diagnostics.omittedIssueCount === 0)) {
+    throw new TransportProtocolError("Malformed check diagnostics");
+  }
+  const seenSources = new Set<string>();
+  let previous: CheckDiagnosticIssue | undefined;
+  const issues = diagnostics.issues.map((value): CheckDiagnostics["issues"][number] => {
+    const issue = requireRecord(value, "check diagnostic issue");
+    requireProtocolIdentifier(issue.sourceId, "check diagnostic sourceId");
+    const reason = CHECK_DIAGNOSTIC_REASONS.find((candidate) => candidate === issue.reason);
+    if ((issue.kind !== "grammar" && issue.kind !== "fluency") || reason === undefined) {
+      throw new TransportProtocolError("Malformed check diagnostic issue");
+    }
+    const range = decodeExactRange(issue.range, "check diagnostic range");
+    if (range.length === 0) throw new TransportProtocolError("Empty check diagnostic range");
+    const decoded: CheckDiagnosticIssue = { sourceId: issue.sourceId, kind: issue.kind, reason, range };
+    if (previous?.sourceId === decoded.sourceId) {
+      if (compareCheckDiagnosticIssuesWithinSource(decoded, previous) <= 0) {
+        throw new TransportProtocolError("Check diagnostic issues must be strictly ordered within a source");
+      }
+    } else {
+      if (seenSources.has(decoded.sourceId)) {
+        throw new TransportProtocolError("Check diagnostic source blocks must not repeat");
+      }
+      seenSources.add(decoded.sourceId);
+    }
+    previous = decoded;
+    return decoded;
+  });
+  return { issues, omittedIssueCount: diagnostics.omittedIssueCount };
 }
 
 function decodeCheckingProgress(

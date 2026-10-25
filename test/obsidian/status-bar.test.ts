@@ -18,6 +18,7 @@ import {
   statusMenuShowsAutomaticCheckNotice,
   statusMenuShowsCheckControls,
   statusMenuShowsManualCheck,
+  statusMenuCheckLabel,
 } from "../../src/obsidian/status-bar";
 
 describe("Refine status bar", () => {
@@ -50,6 +51,18 @@ describe("Refine status bar", () => {
     expect(statusMenuShowsManualCheck(state)).toBe(true);
     expect(statusMenuShowsAutomaticCheckNotice(state)).toBe(false);
   });
+
+  it.each(["partial", "checkFailed"] as const)(
+    "offers an explicit retry after %s even when automatic checks are enabled",
+    (type) => {
+      const state = type === "partial"
+        ? { type, count: 2, automaticChecksEnabled: true }
+        : { type, automaticChecksEnabled: true };
+      expect(statusMenuShowsManualCheck(state)).toBe(true);
+      expect(statusMenuShowsAutomaticCheckNotice(state)).toBe(false);
+      expect(statusMenuCheckLabel(state)).toBe("Retry current note");
+    },
+  );
 
   it("hides the automatic-check notice when the manual check is shown", () => {
     expect(statusMenuShowsAutomaticCheckNotice({

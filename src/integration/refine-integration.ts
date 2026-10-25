@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { CHECK_DIAGNOSTICS_CAPABILITY, checkDiagnosticsMatchSnapshot } from "./check-diagnostics";
+import { CheckDiagnosticRevisionHistory } from "./check-diagnostic-revision-history";
+
+import {
+  integrationErrorDiagnostic,
+  type IntegrationErrorDiagnostic,
+} from "./error-diagnostic";
 
 import { isFatalEngineConnectionError } from "../transport/engine-connection-error";
 import { AsyncQueue } from "../shared/async-queue";
@@ -46,6 +53,8 @@ export interface WritingCheckEnginePort {
 
 export interface RefineIntegrationOptions {
   readonly enginePort: WritingCheckEnginePort;
+  /** Receives finite, source-redacted error classifications. */
+  readonly onErrorDiagnostic?: (diagnostic: IntegrationErrorDiagnostic) => void;
   readonly reconnectDelayMs?: number;
   /**
    * Maximum time to wait for Refine to accept an open or replacement document
@@ -90,6 +99,7 @@ export function createRefineIntegration(options: RefineIntegrationOptions): Refi
         options.reconnectDelayMs ?? 1_000,
         documentAcknowledgmentTimeoutMs,
         options.onDocumentAcknowledgment,
+        options.onErrorDiagnostic,
       );
       await run.start();
     },
@@ -165,6 +175,7 @@ const MAX_BUFFERED_HOST_OBSERVATIONS = 128;
 
 class IntegrationRun {
   private runId = randomUUID();
+  private readonly diagnosticRevisions = new CheckDiagnosticRevisionHistory();
   private readonly lifecycle = new AbortController();
   private readonly pendingActions = new Map<string, PendingAction>();
   private readonly actionByKey = new Map<string, Promise<ActionOutcome>>();
@@ -230,11 +241,14 @@ class IntegrationRun {
   constructor(
     private readonly host: WritingHost,
     private readonly enginePort: WritingCheckEnginePort,
-    signal: AbortSignal,
+    private readonly signal: AbortSignal,
     private readonly reconnectDelayMs: number,
     private readonly documentAcknowledgmentTimeoutMs: number,
     private readonly onDocumentAcknowledgment:
       | ((diagnostic: RefineDocumentAcknowledgmentDiagnostic) => void)
+      | undefined,
+    private readonly onErrorDiagnostic:
+      | ((diagnostic: IntegrationErrorDiagnostic) => void)
       | undefined,
   ) {
     if (signal.aborted) {
@@ -292,6 +306,7 @@ class IntegrationRun {
           await this.openLatestSnapshot();
           await this.pumpEvents(connected);
         } catch (error) {
+          this.diagnoseError("connection", error);
           if (
             error instanceof HandshakeRejectedError &&
             error.recovery === "newRun"
@@ -330,6 +345,9 @@ class IntegrationRun {
     } catch (error) {
       failure = toError(error);
     } finally {
+      if (failure !== undefined) {
+        this.diagnoseError("integration", failure);
+      }
       this.lifecycle.abort(failure);
       this.observationCycle?.controller.abort(failure);
       await this.observationCycle?.iterator.return?.().catch(() => undefined);
@@ -793,6 +811,12 @@ class IntegrationRun {
 
     const { content } = event;
     validateCheckingProgress(content);
+    if (
+      content.checkDiagnostics !== undefined &&
+      !this.diagnosticRevisions.matches(content.checkDiagnostics, content.documentRevision, this.latestSnapshot)
+    ) {
+      throw new FatalEngineError("Presentation contained invalid check diagnostics");
+    }
     const previousCurrentCheckId = this.currentCheckIdByRevision.get(
       content.documentRevision,
     );
@@ -1233,6 +1257,7 @@ class IntegrationRun {
       interaction: this.interaction,
       state: presentationState(content),
       suggestions: this.disablePendingActions(content.suggestions),
+      ...(content.checkDiagnostics === undefined ? {} : { checkDiagnostics: content.checkDiagnostics }),
     };
     await this.publish(snapshot);
   }
@@ -1711,6 +1736,7 @@ class IntegrationRun {
 
   private async abandonLostCoordinatorState(): Promise<void> {
     await this.abandonUnacknowledgedReceipts();
+    this.diagnosticRevisions.clear();
     this.checkPresentationLifecycles.clear();
     this.currentCheckIdByRevision.clear();
     this.activeCheckingCheckIdByRevision.clear();
@@ -1770,7 +1796,9 @@ class IntegrationRun {
         try {
           await this.host.present(snapshot, actions);
         } catch (error) {
-          throw new FatalHostError("WritingHost.present failed", { cause: error });
+          const failure = new FatalHostError("WritingHost.present failed", { cause: error });
+          this.diagnoseError("host", failure);
+          throw failure;
         }
       });
     this.presentationTail = operation;
@@ -1938,6 +1966,12 @@ class IntegrationRun {
       return undefined;
     }
     try {
+      if (session.activatedCapabilities.includes(CHECK_DIAGNOSTICS_CAPABILITY)) {
+        const snapshot = command.type === "openDocument" || command.type === "replaceDocument"
+          ? command.snapshot
+          : command.type === "completeApply" ? snapshotFromOutcome(command.outcome) : undefined;
+        if (snapshot !== undefined) this.diagnosticRevisions.remember(snapshot);
+      }
       return await session.send(command, commandId);
     } catch (error) {
       if (this.session === session) {
@@ -2050,6 +2084,20 @@ class IntegrationRun {
     }
     this.diagnoseDocumentAcknowledgment("accepted", pending.command);
     this.cancelDocumentAcknowledgment();
+  }
+
+  private diagnoseError(
+    boundary: IntegrationErrorDiagnostic["boundary"],
+    error: unknown,
+  ): void {
+    if (this.signal.aborted || isAbort(error)) {
+      return;
+    }
+    try {
+      this.onErrorDiagnostic?.(integrationErrorDiagnostic(this.runId, boundary, error));
+    } catch {
+      // Diagnostics never participate in integration lifecycle correctness.
+    }
   }
 
   private diagnoseDocumentAcknowledgment(
@@ -2394,6 +2442,10 @@ function validatePresentationContent(
   snapshot: DocumentSnapshot,
   boundariesBySource: Map<string, Set<number>>,
 ): void {
+  if (content.checkDiagnostics !== undefined &&
+      !checkDiagnosticsMatchSnapshot(content.checkDiagnostics, snapshot)) {
+    throw new FatalEngineError("Presentation contained invalid check diagnostics");
+  }
   if (
     (content.status === "pending" ||
       content.status === "unavailable" ||

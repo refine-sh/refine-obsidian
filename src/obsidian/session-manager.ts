@@ -1,4 +1,5 @@
 import type { EditorView } from "@codemirror/view";
+import type { CheckDiagnosticIssue } from "../integration/check-diagnostics";
 
 import type {
   CheckIntent,
@@ -46,6 +47,7 @@ interface ActiveSession {
   readonly documentIdentity: object;
   readonly host: ObsidianWritingHost;
   readonly controller: AbortController;
+  presentation?: PresentationSnapshot;
 }
 
 export class ObsidianSessionManager {
@@ -92,6 +94,7 @@ export class ObsidianSessionManager {
         : { resolveSourceSyntax: this.resolveSourceSyntax }),
       onPresentation: (snapshot) => {
         if (session !== undefined && this.active === session) {
+          session.presentation = snapshot;
           this.onStateChange({ type: "presented", snapshot });
         }
       },
@@ -127,6 +130,20 @@ export class ObsidianSessionManager {
     ) {
       this.active.host.requestCheck(intent);
     }
+  }
+
+  async revealCheckIssue(snapshot: PresentationSnapshot, issue: CheckDiagnosticIssue): Promise<boolean> {
+    const session = this.active;
+    if (!session || session.presentation !== snapshot || issue.sourceId !== "document" ||
+        !snapshot.checkDiagnostics?.issues.includes(issue)) return false;
+    const state = session.view.state;
+    const validation = await session.host.validateRevision(snapshot.documentRevision);
+    if (validation.status !== "current" || this.active !== session || session.presentation !== snapshot || session.view.state !== state) return false;
+    const end = issue.range.location + issue.range.length;
+    if (!Number.isSafeInteger(end) || issue.range.location < 0 || issue.range.length <= 0 || end > session.view.state.doc.length) return false;
+    session.view.dispatch({ selection: { anchor: issue.range.location, head: end }, scrollIntoView: true });
+    session.view.focus();
+    return true;
   }
 
   /**

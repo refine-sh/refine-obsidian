@@ -15,6 +15,9 @@ import {
 import type { EditorView } from "@codemirror/view";
 
 import { createRefineIntegration } from "./integration/refine-integration";
+import { CHECK_DIAGNOSTICS_CAPABILITY } from "./integration/check-diagnostics";
+import type { PresentationSnapshot } from "./integration/types";
+import { partialCheckPassages, partialCheckReport } from "./obsidian/partial-check";
 import { integrationFailureNotice } from "./obsidian/compatibility";
 import { ObsidianEditorRegistry } from "./obsidian/editor-registry";
 import {
@@ -36,6 +39,7 @@ import {
   statusMenuShowsAutomaticCheckNotice,
   statusMenuShowsCheckControls,
   statusMenuShowsManualCheck,
+  statusMenuCheckLabel,
 } from "./obsidian/status-bar";
 import { RefineTransport } from "./transport/refine-transport";
 
@@ -45,6 +49,7 @@ export default class RefinePlugin extends Plugin {
   private statusBar: RefineStatusBarController | undefined;
   private statusItem: HTMLElement | undefined;
   private statusState: RefineStatusBarState = { type: "noEditor" };
+  private presentation: PresentationSnapshot | undefined;
 
   onload(): void {
     addIcon(REFINE_MENU_BAR_ICON_ID, REFINE_MENU_BAR_ICON_SVG);
@@ -62,14 +67,19 @@ export default class RefinePlugin extends Plugin {
     });
 
     const enginePort = new RefineTransport({
-      capabilities: [SUGGESTION_SHORTCUT_CAPABILITY, SUGGESTION_GESTURE_CAPABILITY],
+      capabilities: [SUGGESTION_SHORTCUT_CAPABILITY, SUGGESTION_GESTURE_CAPABILITY, CHECK_DIAGNOSTICS_CAPABILITY],
       client: {
         id: "refine-obsidian",
         version: this.manifest.version,
         host: "obsidian",
       },
     });
-    const integration = createRefineIntegration({ enginePort });
+    const integration = createRefineIntegration({
+      enginePort,
+      onErrorDiagnostic: (diagnostic) => {
+        console.error(`[IntegrationTransportDiagnostic] ${JSON.stringify(diagnostic)}`);
+      },
+    });
     this.sessions = new ObsidianSessionManager({
       integration,
       resolveSourceSyntax: () => documentSourceSyntax(this.app.vault),
@@ -99,6 +109,7 @@ export default class RefinePlugin extends Plugin {
         new Notice(integrationFailureNotice(error));
       },
       onStateChange: (state) => {
+        this.presentation = state.type === "presented" ? state.snapshot : undefined;
         this.statusState = statusBarStateForSession(state);
         this.statusBar?.setState(this.statusState);
         this.refreshStatusTooltip();
@@ -177,12 +188,35 @@ export default class RefinePlugin extends Plugin {
       this.statusItem?.getAttribute("aria-label")
         ?.replace(/\. Open Refine menu$/, "") ?? "Refine";
     menu.addItem((item) => item.setTitle(status).setIsLabel(true));
+    const presentation = this.presentation;
+    const editor = this.activeEditor();
+    if (presentation?.checkDiagnostics !== undefined && editor !== undefined) {
+      menu.addSeparator();
+      for (const passage of partialCheckPassages(presentation, editor.view.state.doc)) {
+        menu.addItem((item) => item.setTitle(passage.label).setIcon("text-select").onClick(async () => {
+          if (!await this.sessions?.revealCheckIssue(presentation, passage.issue)) {
+            new Notice("The note changed. Check it again to locate this passage.");
+          }
+        }));
+      }
+      const omitted = presentation.checkDiagnostics.omittedIssueCount;
+      if (omitted > 0) menu.addItem((item) => item.setTitle(`${omitted} more incomplete ${omitted === 1 ? "check" : "checks"}`).setIsLabel(true));
+      const report = partialCheckReport(presentation, editor.view.state.doc);
+      menu.addItem((item) => item.setTitle("Copy check details (no note text)").setIcon("copy").onClick(async () => {
+        try {
+          await navigator.clipboard.writeText(report);
+          new Notice("Check details copied.");
+        } catch {
+          new Notice("Check details could not be copied.");
+        }
+      }));
+    }
     if (statusMenuShowsCheckControls(this.statusState)) {
       menu.addSeparator();
       if (statusMenuShowsManualCheck(this.statusState)) {
         menu.addItem((item) =>
           item
-            .setTitle("Check current note")
+            .setTitle(statusMenuCheckLabel(this.statusState))
             .setIcon("spell-check-2")
             .setDisabled(this.activeEditor() === undefined)
             .onClick(() => this.requestCheckForActiveEditor()),
