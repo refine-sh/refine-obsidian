@@ -379,6 +379,104 @@ describe("ObsidianWritingHost", () => {
     host.close();
   });
 
+  it.each([
+    ["It's ready.", "It’s ready."],
+    ["It’s ready.", "It's ready."],
+    ["'Ready'", "‘Ready’"],
+    ['"Ready"', "“Ready”"],
+    ["“Ready”", '"Ready"'],
+    ['😀 e\u0301 says "it\'s ready".', "😀 e\u0301 says “it’s ready”."],
+  ])("reports the actual quote-restyled snapshot after a successful write: %s", async (expected, observed) => {
+    const view = quoteResultView(expected, observed);
+    const host = new ObsidianWritingHost(view, { sessionId: "quotes" });
+    const dispatch = vi.spyOn(view, "dispatch");
+
+    const outcome = await host.apply(quoteRequest());
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(outcome).toMatchObject({
+      status: "applied",
+      snapshot: { revision: "quotes:1", sources: [{ text: observed }] },
+    });
+    expect(view.state.doc.toString()).toBe(observed);
+    host.close();
+
+    function quoteRequest() {
+      return {
+        expectedRevision: "quotes:0",
+        sourceId: "document",
+        edits: [{ range: { location: 0, length: 6 }, expectedText: "Before", replacement: expected }],
+      };
+    }
+  });
+
+  it.each([
+    ["It's ready.", "It′s ready."],
+    ["It's ready.", "Itʼs ready."],
+    ["It's ready.", "It‚s ready."],
+    ["'Ready'", "`Ready`"],
+    ["'Ready'", "“Ready”"],
+    ["It's ready.", "Its ready."],
+    ["It's ready.", "It’s  ready."],
+    ["It's ready.", "It’s late."],
+    ["A'B", "AB’"],
+    ['😀 "Ready"', '😃 “Ready”'],
+  ])("keeps other host text changes indeterminate: %s → %s", async (expected, observed) => {
+    const view = quoteResultView(expected, observed);
+    const host = new ObsidianWritingHost(view, { sessionId: "quotes" });
+
+    const outcome = await host.apply({
+      expectedRevision: "quotes:0",
+      sourceId: "document",
+      edits: [{ range: { location: 0, length: 6 }, expectedText: "Before", replacement: expected }],
+    });
+
+    expect(outcome).toMatchObject({
+      status: "indeterminate",
+      snapshot: { sources: [{ text: observed }] },
+    });
+    host.close();
+  });
+
+  it("does not classify a thrown dispatch as applied even when its result only restyles quotes", async () => {
+    const view = quoteResultView("It's ready.", "It’s ready.");
+    const host = new ObsidianWritingHost(view, { sessionId: "quotes" });
+    const originalDispatch = view.dispatch.bind(view);
+    const dispatch = vi.spyOn(view, "dispatch").mockImplementation((...specs) => {
+      originalDispatch(...specs);
+      throw new Error("write outcome unknown");
+    });
+
+    const outcome = await host.apply({
+      expectedRevision: "quotes:0",
+      sourceId: "document",
+      edits: [{ range: { location: 0, length: 6 }, expectedText: "Before", replacement: "It's ready." }],
+    });
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(outcome).toMatchObject({
+      status: "indeterminate",
+      snapshot: { sources: [{ text: "It’s ready." }] },
+    });
+    dispatch.mockRestore();
+    host.close();
+  });
+
+  function quoteResultView(expected: string, observed: string): EditorView {
+    return createView("Before", [
+      EditorState.transactionFilter.of((transaction) => {
+        if (!transaction.isUserEvent("input.refine.apply")) {
+          return transaction;
+        }
+        expect(transaction.newDoc.toString()).toBe(expected);
+        return {
+          changes: { from: 0, to: transaction.startState.doc.length, insert: observed },
+          userEvent: "input.refine.apply",
+        };
+      }),
+    ]);
+  }
+
   it("rejects a stale revision without changing Markdown", async () => {
     const view = createView("create an link");
     const host = new ObsidianWritingHost(view, { sessionId: "stale" });

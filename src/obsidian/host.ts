@@ -40,6 +40,15 @@ export interface ObsidianWritingHostOptions {
 
 const DOCUMENT_SOURCE_ID = "document";
 
+function matchesHostQuoteResult(expected: string, actual: string | undefined): boolean {
+  if (actual === undefined || actual.length !== expected.length) {
+    return false;
+  }
+  const foldQuotes = (text: string): string =>
+    text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"');
+  return actual === expected || foldQuotes(actual) === foldQuotes(expected);
+}
+
 /**
  * Obsidian renders every source line ending as a line break in a default vault,
  * so Refine must keep each one exactly where the author put it. This syntax
@@ -216,7 +225,10 @@ export class ObsidianWritingHost {
     }
 
     const after = this.snapshot();
-    return after.revision !== before.revision && after.sources[0]?.text === expected
+    // This is a candidate result; Refine validates protected source and prose
+    // against the unchanged authoritative snapshot before accepting the Apply.
+    return after.revision !== before.revision &&
+      matchesHostQuoteResult(expected, after.sources[0]?.text)
       ? { status: "applied", snapshot: after }
       : { status: "indeterminate", snapshot: after };
   }
