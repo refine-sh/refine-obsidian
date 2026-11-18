@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://refine.sh/">
+  <a href="https://refine.sh/?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://refine.sh/icon-dark.png">
       <img src="https://refine.sh/icon.png" width="128" alt="Refine icon">
@@ -16,17 +16,17 @@
 <p align="center">
   <a href="https://obsidian.md/plugins?id=refine"><strong>Install in Obsidian</strong></a>
   ·
-  <a href="https://refine.sh/"><strong>Download Refine for Mac</strong></a>
+  <a href="https://refine.sh/?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme"><strong>Download Refine for Mac</strong></a>
 </p>
 
-Refine is an AI grammar checker powered by a local language model, so it can run
-entirely offline. This plugin brings its contextual grammar, spelling, and
-fluency suggestions to Obsidian, helping you improve your notes without leaving
-your editor.
+Refine is an AI grammar checker powered by a local language model, so checks
+keep working offline once the model is downloaded. This plugin brings its
+contextual grammar, spelling, and fluency suggestions to Obsidian, helping you
+improve your notes without leaving your editor.
 
 Features:
 
-- Offline checks powered by a downloaded local LLM on your device
+- Grammar, spelling, and fluency checks with a local model on your Mac
 - Inline highlights and suggestion cards for reviewing changes in context
 - Clear explanations of why each change is suggested
 
@@ -34,14 +34,15 @@ Features:
 
 - macOS 14 or later
 - Obsidian desktop 1.5.0 or later
-- [Refine for Mac](https://refine.sh/) 1.35 or later
+- [Refine for Mac](https://refine.sh/?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme) 1.35 or later
 
-Refine is free to use for grammar and fluency checks, with no account or credit
-card required.
+Basic grammar checks are free. Every feature has a 7-day free trial, with no
+account needed. A one-time license is $38 for 1 Mac or $68 for 3 Macs. See
+[pricing](https://refine.sh/?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme#pricing).
 
 ## Install
 
-1. [Download Refine for Mac](https://refine.sh/), open it, and complete setup.
+1. [Download Refine for Mac](https://refine.sh/?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme), open it, and complete setup.
 2. In Obsidian, open **Settings → Community plugins → Browse**.
 3. Search for **Refine**, then select **Install** and **Enable**. You can also
    [open the Refine plugin in Obsidian](obsidian://show-plugin?id=refine).
@@ -104,12 +105,13 @@ suggestions.
 
 This plugin does not send its own analytics or persist note source. It keeps the
 active integration state in memory; Obsidian and any other installed plugins
-have their own logging, telemetry, and retention behavior. App and model
-downloads, updates, optional license services, hosted checks, and Report require
-internet access.
+have their own logging, telemetry, and retention behavior. With a local model,
+Refine still uses the network for the model download, app updates, license
+activation, crash reports, and a launch ping. Hosted checks and Report also
+need a connection.
 
-[Learn how Refine handles your writing](https://refine.sh/guides/how-refine-works)
-or read the [privacy policy](https://refine.sh/privacy-policy).
+[Learn how Refine handles your writing](https://refine.sh/guides/how-refine-works?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme)
+or read the [privacy policy](https://refine.sh/privacy-policy?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme).
 
 ## Troubleshooting
 
@@ -144,17 +146,17 @@ the new suggestion.
 
 Refine is a local-first AI writing assistant for Mac. With a downloaded local
 model, it can check grammar, spelling, and fluency in Obsidian without sending
-your writing to a cloud model. Its grammar and fluency checks are free to use
-and require no account. Refine requires its Mac app; it is not a standalone
-Obsidian plugin.
+your writing to a cloud model. Basic grammar checks are free, and every feature
+has a 7-day free trial with no account. Refine requires its Mac app; it is not a
+standalone Obsidian plugin.
 
 ### Does Refine work completely offline?
 
-Writing checks can run offline with a downloaded local model. Downloads,
-updates, hosted models, and optional license services still require a
-connection. Free grammar and fluency checks do not require license activation.
-If you have a purchased lifetime license, you can use
-[Offline Activation](https://refine.sh/guides/offline-grammar-checker-mac) for
+Writing checks can run offline with a downloaded local model. With a local
+model, Refine still uses the network for the model download, app updates,
+license activation, crash reports, and a launch ping. Basic grammar checks do
+not need license activation. If you have a purchased lifetime license, you can use
+[Offline Activation](https://refine.sh/guides/offline-grammar-checker-mac?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme) for
 advanced features during longer disconnected use.
 
 ### Does the plugin work on Windows, Linux, or mobile?
@@ -170,7 +172,7 @@ vault-wide checks or check Reading view.
 ## Get started
 
 Ready to use a local AI grammar checker in Obsidian?
-[Download Refine for Mac](https://refine.sh/), then
+[Download Refine for Mac](https://refine.sh/?utm_source=refine-obsidian&utm_medium=referral&utm_campaign=dev_plugin_readme), then
 [install Refine from Obsidian Community Plugins](https://obsidian.md/plugins?id=refine).
 
 ## Support
