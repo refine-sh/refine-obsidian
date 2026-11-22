@@ -83,10 +83,16 @@ export const SUGGESTION_HIGHLIGHT_STYLES = [
   "highlight",
 ] as const satisfies readonly SuggestionHighlightStyle[];
 
+// Only clients that activated com.runjuu.refine.wavy-underline-highlight.v1
+// may receive this style; everyone else keeps the base registry.
+export const WAVY_UNDERLINE_HIGHLIGHT_STYLE = "wavyUnderline" satisfies SuggestionHighlightStyle;
+
 export function isSuggestionHighlightStyle(
   value: unknown,
+  wavyUnderlineEnabled = false,
 ): value is SuggestionHighlightStyle {
-  return isRegistryValue(SUGGESTION_HIGHLIGHT_STYLES, value);
+  return isRegistryValue(SUGGESTION_HIGHLIGHT_STYLES, value) ||
+    (wavyUnderlineEnabled && value === WAVY_UNDERLINE_HIGHLIGHT_STYLE);
 }
 
 export const SUGGESTION_KINDS = [

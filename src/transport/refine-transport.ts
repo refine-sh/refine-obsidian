@@ -1,6 +1,7 @@
 import { SUGGESTION_GESTURE_CAPABILITY, isSuggestionBinding } from "../integration/suggestion-binding";
 import { SUGGESTION_SHORTCUT_CAPABILITY, isSuggestionShortcut } from "../integration/suggestion-shortcut";
 import { randomUUID } from "node:crypto";
+import { WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY } from "../integration/wavy-underline-highlight";
 import { CHECK_DIAGNOSTICS_CAPABILITY, CHECK_DIAGNOSTIC_REASONS, MAX_CHECK_DIAGNOSTIC_ISSUES, compareCheckDiagnosticIssuesWithinSource, type CheckDiagnosticIssue, type CheckDiagnostics } from "../integration/check-diagnostics";
 
 import type { PresentationInteraction } from "../integration/types";
@@ -424,7 +425,8 @@ class Session implements RefineTransportSession {
       }
       const envelope = decodeEventEnvelope(next.value,
         this.activatedCapabilities.includes(SUGGESTION_GESTURE_CAPABILITY) ? 2 : this.activatedCapabilities.includes(SUGGESTION_SHORTCUT_CAPABILITY),
-        this.activatedCapabilities.includes(CHECK_DIAGNOSTICS_CAPABILITY));
+        this.activatedCapabilities.includes(CHECK_DIAGNOSTICS_CAPABILITY),
+        this.activatedCapabilities.includes(WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY));
       if (envelope.epoch !== this.serverEpoch) {
         throw new TransportProtocolError("Received an event from a different server epoch");
       }
@@ -875,7 +877,7 @@ function decodeWelcome(
   };
 }
 
-function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false): ServerEventEnvelope {
+function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false, wavyUnderlineEnabled = false): ServerEventEnvelope {
   const object = requireRecord(value, "event envelope");
   const epoch = object.epoch;
   requireProtocolIdentifier(epoch, "event.epoch");
@@ -890,7 +892,7 @@ function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number 
   ) {
     throw new TransportProtocolError("Malformed server event envelope");
   }
-  const event = decodeServerEvent(object.event, shortcutsEnabled, checkDiagnosticsEnabled);
+  const event = decodeServerEvent(object.event, shortcutsEnabled, checkDiagnosticsEnabled, wavyUnderlineEnabled);
   return object.causeCommandId === undefined
     ? { type: "event", sequence: object.sequence, epoch, event }
     : {
@@ -902,7 +904,7 @@ function decodeEventEnvelope(value: unknown, shortcutsEnabled: boolean | number 
       };
 }
 
-function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false): ServerEventEnvelope["event"] {
+function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false, wavyUnderlineEnabled = false): ServerEventEnvelope["event"] {
   const event = requireRecord(value, "server event");
   switch (event.type) {
     case "documentAccepted":
@@ -918,7 +920,7 @@ function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = 
       return {
         type: "presentationContentReplaced",
         checkId: event.checkId,
-        content: decodePresentationContent(event.content, shortcutsEnabled, checkDiagnosticsEnabled),
+        content: decodePresentationContent(event.content, shortcutsEnabled, checkDiagnosticsEnabled, wavyUnderlineEnabled),
       };
     case "applyRequested":
       requireProtocolIdentifier(event.actionId, "applyRequested.actionId");
@@ -959,7 +961,7 @@ function decodeServerEvent(value: unknown, shortcutsEnabled: boolean | number = 
   }
 }
 
-function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false): PresentationContent {
+function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | number = false, checkDiagnosticsEnabled = false, wavyUnderlineEnabled = false): PresentationContent {
   const content = requireRecord(value, "presentation content");
   requireProtocolIdentifier(content.documentRevision, "presentation.documentRevision");
   if (!isPresentationStatus(content.status) || !Array.isArray(content.suggestions)) {
@@ -1031,7 +1033,7 @@ function decodePresentationContent(value: unknown, shortcutsEnabled: boolean | n
       break;
   }
   const suggestions = content.suggestions.map(decodePresentedSuggestion);
-  const appearance = decodePresentationAppearance(content.appearance);
+  const appearance = decodePresentationAppearance(content.appearance, wavyUnderlineEnabled);
   const interaction = decodePresentationInteraction(content.interaction, shortcutsEnabled);
   const progress = !hasProgress
     ? undefined
@@ -1145,12 +1147,13 @@ function decodeCheckingProgress(
 
 function decodePresentationAppearance(
   value: unknown,
+  wavyUnderlineEnabled = false,
 ): import("../integration/types").PresentationAppearance {
   const appearance = requireRecord(value, "presentation.appearance");
   const highlight = requireRecord(appearance.highlight, "presentation.appearance.highlight");
   const diff = requireRecord(appearance.diff, "presentation.appearance.diff");
   if (
-    !isSuggestionHighlightStyle(highlight.style) ||
+    !isSuggestionHighlightStyle(highlight.style, wavyUnderlineEnabled) ||
     !isCanonicalRGBColor(highlight.grammarColor) ||
     !isCanonicalRGBColor(highlight.fluencyColor) ||
     !isCanonicalRGBColor(diff.additionColor) ||

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { OFFERED_CAPABILITIES } from "../../src/integration/offered-capabilities";
 import { DEFAULT_PRESENTATION_INTERACTION } from "../../src/integration/types";
+import { WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY } from "../../src/integration/wavy-underline-highlight";
 import { EngineConnectionError } from "../../src/transport/engine-connection-error";
 import { FrameDecoder } from "../../src/transport/frame-codec";
 import { AsyncQueue } from "../../src/shared/async-queue";
@@ -62,6 +64,56 @@ describe("Refine transport handshake", () => {
       expect(result.value.event.content.interaction.quickApply.applyKey).toBe("tab");
     }
     await session.close();
+  });
+
+  it.each([
+    [true, "wavyUnderline", "wavyUnderline"],
+    [true, "underline", "underline"],
+    [true, "squiggly", undefined],
+    [false, "wavyUnderline", undefined],
+    [false, "dashedUnderline", "dashedUnderline"],
+  ] as const)(
+    "decodes highlight styles by wavy-underline activation (activated %s, %s)",
+    async (activated, style, expected) => {
+      const frames = new AsyncQueue<unknown>();
+      const sent: unknown[] = [];
+      const connector = connectionConnector(frames, sent, () => frames.push({
+        type: "welcome", protocol: { major: 1, minor: 0 }, serverEpoch: "epoch-1", runResumed: false,
+        limits: { maxFrameBytes: 8_388_608, maxSources: 2, maxSourceBytes: 1_048_576 },
+        capabilities: activated ? [WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY] : [],
+      }));
+      const transport = new RefineTransport({
+        client: { id: "test", version: "1", host: "test" },
+        capabilities: [WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY],
+        connector, endpointLocator: endpointLocator(),
+      });
+      const session = await transport.connect(new AbortController().signal, { runId: "run-wavy" });
+      expect(sent[0]).toMatchObject({ type: "hello", capabilities: [WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY] });
+      frames.push({ type: "event", sequence: 1, epoch: "epoch-1", event: {
+        type: "presentationContentReplaced", checkId: "check-1", content: {
+          documentRevision: "doc:0", presentationRevision: 1, checkGeneration: 1, status: "pending", suggestions: [],
+          appearance: {
+            highlight: { style, grammarColor: "#FF2D55", fluencyColor: "#007AFF" },
+            diff: { additionColor: "#34C759", deletionColor: "#FF3B30", showHiddenWhitespace: true },
+          },
+          interaction: DEFAULT_PRESENTATION_INTERACTION,
+        },
+      } });
+      const events = session.events(new AbortController().signal)[Symbol.asyncIterator]();
+      if (expected === undefined) {
+        await expect(events.next()).rejects.toThrow("Malformed presentation appearance");
+      } else {
+        await expect(events.next()).resolves.toMatchObject({
+          value: { event: { content: { appearance: { highlight: { style: expected } } } } },
+        });
+      }
+      await session.close();
+    },
+  );
+
+  it("offers the wavy underline highlight capability from the Obsidian plugin", () => {
+    expect(OFFERED_CAPABILITIES).toContain(WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY);
+    expect(WAVY_UNDERLINE_HIGHLIGHT_CAPABILITY).toBe("com.runjuu.refine.wavy-underline-highlight.v1");
   });
 
   it.each([

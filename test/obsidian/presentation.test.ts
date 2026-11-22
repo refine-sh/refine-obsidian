@@ -205,6 +205,9 @@ describe("Obsidian presentation", () => {
         ) &&
         rule.selectorText.includes(
           ".refine-suggestion--provisional.refine-suggestion--dashedUnderline::after",
+        ) &&
+        rule.selectorText.includes(
+          ".refine-suggestion--provisional.refine-suggestion--wavyUnderline::after",
         )
       );
       const liveHighlightRule = rules.find((rule) =>
@@ -1836,7 +1839,7 @@ describe("Obsidian presentation", () => {
     }
   });
 
-  it.each(["underline", "dashedUnderline", "highlight"] as const)(
+  it.each(["underline", "dashedUnderline", "wavyUnderline", "highlight"] as const)(
     "renders %s highlights and insertion anchors with kind colors",
     async (style) => {
       const { host } = createHost("abcdef", `appearance-${style}`);
@@ -1860,7 +1863,7 @@ describe("Obsidian presentation", () => {
     },
   );
 
-  it.each(["underline", "dashedUnderline"] as const)(
+  it.each(["underline", "dashedUnderline", "wavyUnderline"] as const)(
     "renders the Refine %s with a separate pseudo-element when Live Preview owns the text color",
     async (highlightStyle) => {
       const style = document.createElement("style");
@@ -1900,7 +1903,8 @@ describe("Obsidian presentation", () => {
           .filter((rule): rule is CSSStyleRule => "selectorText" in rule);
         const sharedUnderlineRule = rules.find((rule) =>
           rule.selectorText.includes(".refine-suggestion--underline::after") &&
-          rule.selectorText.includes(".refine-suggestion--dashedUnderline::after")
+          rule.selectorText.includes(".refine-suggestion--dashedUnderline::after") &&
+          rule.selectorText.includes(".refine-suggestion--wavyUnderline::after")
         );
         expect(sharedUnderlineRule?.style.position).toBe("absolute");
         expect(sharedUnderlineRule?.style.pointerEvents).toBe("none");
@@ -1936,6 +1940,15 @@ describe("Obsidian presentation", () => {
           expect(dashedRule?.style.backgroundImage).toContain(
             "repeating-linear-gradient",
           );
+        }
+        if (highlightStyle === "wavyUnderline") {
+          const wavyRule = rules.find((rule) =>
+            rule.selectorText === ".refine-suggestion--wavyUnderline::after"
+          );
+          expect(wavyRule?.style.blockSize).toBe("4px");
+          expect(wavyRule?.style.getPropertyValue("--refine-wavy-underline-mask"))
+            .toContain("data:image/svg+xml");
+          expect(wavyRule?.cssText).toContain("mask-image: var(--refine-wavy-underline-mask)");
         }
       } finally {
         style.remove();

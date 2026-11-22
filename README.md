@@ -230,6 +230,13 @@ only DEBUG builds of the Refine app activate the draft capability. Production
 and older Refine servers continue to show the partial status and offer
 **Retry current note**.
 
+The Wavy Underline highlight style uses the optional
+`com.runjuu.refine.wavy-underline-highlight.v1` capability. Only a server that
+activates it may send `wavyUnderline` as the highlight style; without it the
+plugin keeps rejecting that value and servers fall back to `underline`. Like the
+diagnostics extension, pin the published `refine-protocol` revision and rerun
+conformance before releasing it.
+
 The plugin retains bounded coordinate metadata for historical revisions, without
 note text; diagnostics for an unknown or evicted revision end the integration
 because their source coordinates can no longer be validated.

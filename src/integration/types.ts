@@ -67,7 +67,7 @@ export interface DiffRun {
   readonly text: string;
 }
 
-export type SuggestionHighlightStyle = "underline" | "dashedUnderline" | "highlight";
+export type SuggestionHighlightStyle = "underline" | "dashedUnderline" | "wavyUnderline" | "highlight";
 
 export interface PresentationAppearance {
   readonly highlight: {
